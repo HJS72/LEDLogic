@@ -6,6 +6,7 @@
 #include <WebServer.h>
 #include <WiFi.h>
 #include <driver/rmt.h>
+#include "build_version_override.h"
 #include "assets/icons/led_8884594_64_png.h"
 
 namespace {
@@ -256,6 +257,9 @@ uint8_t monthFromAbbrev(const String& month) {
 }
 
 String buildCompileVersion() {
+#ifdef BUILD_VERSION_OVERRIDE
+  return String(BUILD_VERSION_OVERRIDE);
+#else
   const String date = String(__DATE__);
   const String time = String(__TIME__);
 
@@ -274,6 +278,7 @@ String buildCompileVersion() {
   char buffer[16];
   snprintf(buffer, sizeof(buffer), "1.%02u%02u%02u.%02u%02u", year, month, day, hour, minute);
   return String(buffer);
+#endif
 }
 
 void initWs2812Rmt() {
@@ -847,7 +852,7 @@ void loadLedConfig() {
   }
   preferences.end();
 
-  // Migration: Fuer bestehende Installationen einmalig auf "alle LEDs aus" setzen.
+  // Migration: Für bestehende Installationen einmalig auf "alle LEDs aus" setzen.
   if (storedDefaultsVersion < kLedDefaultsVersion) {
     for (uint8_t i = 0; i < kLedMaxCount; ++i) {
       ledConfig[i].enabled = false;
@@ -925,7 +930,7 @@ void clearCredentials() {
   configuredSsid = "";
   configuredPassword = "";
   wifiConnectInProgress = false;
-  appendLog("Gespeicherte WLAN-Konfiguration wurde geloescht.");
+  appendLog("Gespeicherte WLAN-Konfiguration wurde gelöscht.");
 }
 
 void startAccessPoint() {
@@ -1021,7 +1026,7 @@ String extractJsonStringField(const String& json, const String& key) {
 
 bool scheduleOtaFromUrl(const String& url, String& message) {
   if (WiFi.status() != WL_CONNECTED) {
-    message = "OTA von URL nur mit aktiver WLAN-Verbindung moeglich.";
+    message = "OTA von URL nur mit aktiver WLAN-Verbindung möglich.";
     return false;
   }
 
@@ -1050,7 +1055,7 @@ bool scheduleOtaFromUrl(const String& url, String& message) {
 
   const size_t written = Update.writeStream(*stream);
   if (length > 0 && written != static_cast<size_t>(length)) {
-    message = "Unvollstaendiger Download: " + String(written) + " von " + String(length);
+    message = "Unvollständiger Download: " + String(written) + " von " + String(length);
     Update.abort();
     http.end();
     return false;
@@ -1063,13 +1068,13 @@ bool scheduleOtaFromUrl(const String& url, String& message) {
   }
 
   if (!Update.isFinished()) {
-    message = "Update nicht vollstaendig.";
+    message = "Update nicht vollständig.";
     http.end();
     return false;
   }
 
   http.end();
-  message = "OTA erfolgreich, Neustart wird ausgefuehrt.";
+  message = "OTA erfolgreich, Neustart wird ausgeführt.";
   return true;
 }
 
@@ -1277,7 +1282,7 @@ String buildLogicPage() {
 <main class="wrap">
   <div class="topbar">
     <details class="menu">
-      <summary class="menu-button" aria-label="Menue"><span class="menu-icon">&#9776;</span></summary>
+      <summary class="menu-button" aria-label="Menü"><span class="menu-icon">&#9776;</span></summary>
       <nav class="menu-list">
         <a href="/">LED-Logic</a>
         <a href="/config">Konfiguration</a>
@@ -2118,7 +2123,7 @@ String buildLogicPage() {
         clearDropHints();
       });
 
-      // Einrueckung innerhalb Script/Repeat-Strukturen
+      // Einrückung innerhalb Script/Repeat-Strukturen
       const all = steps;
       let depth = 1;
       for (let i = 0; i < all.length; i += 1) {
@@ -2241,7 +2246,7 @@ String buildLogicPage() {
     fetch('/script/run', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) })
       .then(response => {
         if (response.ok) {
-          setStatus('Script laeuft.', true);
+          setStatus('Script läuft.', true);
           ledSimulatorRunning = true;
           syncToolbarStates();
           startLedPreviewPlayback();
@@ -2293,13 +2298,13 @@ String buildLogicPage() {
     fetch('/script/clear', { method: 'POST' })
       .then(response => {
         if (response.ok) {
-          setStatus('Gespeichertes Script geloescht.', false);
+          setStatus('Gespeichertes Script gelöscht.', false);
           ledSimulatorRunning = false;
           syncToolbarStates();
           resetLedPreviewPlayback();
         }
       })
-      .catch(() => setStatus('Loeschen fehlgeschlagen.', false));
+      .catch(() => setStatus('Löschen fehlgeschlagen.', false));
   }
 
   function setStatus(message, running) {
@@ -2381,8 +2386,7 @@ String buildConfigPage() {
         </svg>
         <h1>Konfigurationsseite</h1>
       </div>
-      <p class="tiny">Alle WLAN-, Debug- und OTA-Funktionen wurden hier gebuendelt. Der Normalbetrieb (LED-Steuerung) ist auf der Startseite.</p>
-      <p><a class="link" href="/">Zurueck zum Normalbetrieb</a></p>
+      <p><a class="link" href="/">Zurück zur Startseite</a></p>
       <div class="grid">
         <div class="pill"><strong>WLAN-Status</strong><br><span id="wifi-status"></span></div>
         <div class="pill"><strong>Betriebsmodus</strong><br><span id="operation-mode"></span></div>
@@ -2400,7 +2404,7 @@ String buildConfigPage() {
         <h2>WLAN</h2>
         <button class="neutral" type="button" id="scan-trigger">SSID scannen</button>
         <label for="scan-results">Gefundene Netzwerke</label>
-        <select id="scan-results"><option value="">Noch kein Scan ausgefuehrt</option></select>
+        <select id="scan-results"><option value="">Noch kein Scan ausgeführt</option></select>
 
         <form method="post" action="/save">
           <label for="ssid">SSID</label>
@@ -2418,7 +2422,7 @@ String buildConfigPage() {
         </form>
 
         <form method="post" action="/clear">
-          <button class="secondary" type="submit">WLAN-Konfiguration loeschen</button>
+          <button class="secondary" type="submit">WLAN-Konfiguration löschen</button>
         </form>
 
         <p class="tiny">AP SSID: <strong>)HTML";
@@ -2430,19 +2434,24 @@ String buildConfigPage() {
 
       <article class="panel">
         <h2>OTA Update</h2>
-        <form method="get" action="/ota/check">
+        <form method="get" action="/ota/check" id="ota-check-form">
           <label for="check-url">GitHub Metadata URL (JSON oder Text)</label>
           <input id="check-url" name="url" placeholder="https://.../latest.json oder version.txt" value=")HTML";
-  page += '"';
   page += htmlEscape(kDefaultOtaCheckUrl);
   page += R"HTML(">
-          <button class="neutral" type="submit">Version pruefen</button>
+          <button class="neutral" type="submit">Version prüfen</button>
         </form>
+        <div class="pill" id="ota-check-result">
+          <div><strong>Installierte Version:</strong> <span id="ota-current-version">)HTML";
+  page += htmlEscape(firmwareVersion);
+  page += R"HTML(</span></div>
+          <div><strong>Verfügbare Version:</strong> <span id="ota-remote-version">-</span></div>
+          <div class="tiny" id="ota-check-message">Noch keine Prüfung ausgeführt.</div>
+        </div>
 
         <form method="post" action="/ota/update_url">
           <label for="bin-url">Direkter Firmware-URL (.bin, z. B. GitHub Release Asset)</label>
           <input id="bin-url" name="url" placeholder="https://.../firmware.bin" value=")HTML";
-  page += '"';
   page += htmlEscape(kDefaultOtaBinUrl);
   page += R"HTML(">
           <button class="primary" type="submit">Update von URL starten</button>
@@ -2484,7 +2493,7 @@ String buildConfigPage() {
     async function refreshScan() {
       const select = document.getElementById('scan-results');
       const ssidInput = document.getElementById('ssid');
-      select.innerHTML = '<option value="">Scan laeuft...</option>';
+      select.innerHTML = '<option value="">Scan läuft...</option>';
       try {
         const response = await fetch('/scan');
         const networks = await response.json();
@@ -2493,7 +2502,7 @@ String buildConfigPage() {
           return;
         }
 
-        select.innerHTML = '<option value="">SSID aus Scan waehlen</option>';
+        select.innerHTML = '<option value="">SSID aus Scan wählen</option>';
         for (const network of networks) {
           const option = document.createElement('option');
           option.value = network.ssid;
@@ -2519,14 +2528,60 @@ String buildConfigPage() {
         document.getElementById('ssid-value').textContent = data.ssid || '-';
         document.getElementById('station-ip').textContent = data.stationIp;
         document.getElementById('portal-ip').textContent = data.portalIp;
+        document.getElementById('ota-current-version').textContent = data.version || '-';
         document.getElementById('logbox').innerHTML = data.logs.map((entry) => `<div>${escapeHtml(entry)}</div>`).join('');
       } catch (error) {
         console.log(error);
       }
     }
 
+    function setupOtaCheck() {
+      const form = document.getElementById('ota-check-form');
+      const currentVersion = document.getElementById('ota-current-version');
+      const remoteVersion = document.getElementById('ota-remote-version');
+      const message = document.getElementById('ota-check-message');
+      const binUrl = document.getElementById('bin-url');
+
+      form.addEventListener('submit', async event => {
+        event.preventDefault();
+        const formData = new FormData(form);
+        const url = new URL('/ota/check', window.location.origin);
+        url.searchParams.set('url', formData.get('url'));
+
+        remoteVersion.textContent = '-';
+        message.textContent = 'Prüfung läuft...';
+
+        try {
+          const response = await fetch(url.toString());
+          const data = await response.json();
+          if (!response.ok) {
+            message.textContent = data.error ? `Fehler: ${data.error}` : 'Prüfung fehlgeschlagen.';
+            return;
+          }
+
+          currentVersion.textContent = data.currentVersion || '-';
+          remoteVersion.textContent = data.remoteVersion || '-';
+          if (data.binUrl) {
+            binUrl.value = data.binUrl;
+          }
+
+          if (!data.remoteVersion) {
+            message.textContent = 'Keine verfügbare Version gefunden.';
+          } else if (data.updateAvailable) {
+            message.textContent = 'Update verfügbar.';
+          } else {
+            message.textContent = 'Firmware ist aktuell.';
+          }
+        } catch (error) {
+          message.textContent = 'Prüfung fehlgeschlagen.';
+          console.log(error);
+        }
+      });
+    }
+
     document.getElementById('scan-trigger').addEventListener('click', refreshScan);
     setupPasswordToggle();
+    setupOtaCheck();
     refreshStatus();
     setInterval(refreshStatus, 3000);
   </script>
@@ -2635,7 +2690,7 @@ void handleScriptRun() {
     return;
   }
   if (!parseAndRunScript(json)) {
-    webServer.send(400, "text/plain", "Script ungueltig");
+    webServer.send(400, "text/plain", "Script ungültig");
     return;
   }
   savedScriptJson = json;
@@ -2657,7 +2712,7 @@ void handleScriptSave() {
     return;
   }
   if (!validateScriptJson(json)) {
-    webServer.send(400, "text/plain", "Script ungueltig");
+    webServer.send(400, "text/plain", "Script ungültig");
     return;
   }
   savedScriptJson = json;
@@ -2684,7 +2739,7 @@ void handleScriptClear() {
   preferences.begin(kPreferencesNamespace, false);
   preferences.remove("script");
   preferences.end();
-  appendLog("Script geloescht.");
+  appendLog("Script gelöscht.");
   webServer.send(204, "text/plain", "");
 }
 
@@ -2779,7 +2834,7 @@ void handleOtaUploadFinish() {
     return;
   }
 
-  otaUploadResult = "Upload erfolgreich, Neustart wird ausgefuehrt.";
+  otaUploadResult = "Upload erfolgreich, Neustart wird ausgeführt.";
   appendLog("OTA Upload erfolgreich.");
   otaRebootPending = true;
   otaRebootAtMs = millis() + 1500;
@@ -2791,7 +2846,7 @@ void handleOtaUploadData() {
 
   if (upload.status == UPLOAD_FILE_START) {
     appendLog("OTA Upload gestartet: " + upload.filename);
-    otaUploadResult = "Upload laeuft";
+    otaUploadResult = "Upload läuft";
     if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
       otaUploadResult = "Update.begin fehlgeschlagen: " + String(Update.errorString());
       appendLog(otaUploadResult);

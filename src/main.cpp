@@ -1025,6 +1025,22 @@ String extractJsonStringField(const String& json, const String& key) {
   return json.substring(start, end);
 }
 
+String normalizeVersionForCompare(String version) {
+  version.trim();
+  if (!version.isEmpty() && (version.charAt(0) == 'v' || version.charAt(0) == 'V')) {
+    version.remove(0, 1);
+    version.trim();
+  }
+  version.toLowerCase();
+  return version;
+}
+
+int compareVersionsAlphabetical(const String& leftRaw, const String& rightRaw) {
+  const String left = normalizeVersionForCompare(leftRaw);
+  const String right = normalizeVersionForCompare(rightRaw);
+  return left.compareTo(right);
+}
+
 bool scheduleOtaFromUrl(const String& url, String& message) {
   if (WiFi.status() != WL_CONNECTED) {
     message = "OTA von URL nur mit aktiver WLAN-Verbindung möglich.";
@@ -1160,14 +1176,14 @@ String buildLogicPage() {
   page += kLedLogicFaviconUrl;
   page += R"HTML(">
   <style>
-    :root { --bg:#f6f8fb; --panel:#ffffff; --line:#d8deea; --text:#142033; --accent:#0c7a5b; --muted:#5f6f84; }
-    body { margin:0; font-family:"Avenir Next","Segoe UI",sans-serif; background:linear-gradient(140deg,#edf2f8,#f7efe7); color:var(--text); padding:18px; }
+    :root { --bg:#f3eeff; --panel:#ffffff; --line:#ddd0f0; --text:#1a1030; --accent:#9b3db8; --muted:#6d5a84; }
+    body { margin:0; font-family:"Avenir Next","Segoe UI",sans-serif; background:linear-gradient(140deg,#e8f0ff,#f5e6ff); color:var(--text); padding:18px; }
     .wrap { margin:0 auto; display:grid; gap:16px; }
     .panel { background:var(--panel); border:1px solid var(--line); border-radius:20px; padding:20px; }
     h1,h2,h3 { margin-top:0; }
     .topbar { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:4px; }
     .title-row { display:flex; align-items:center; gap:8px; }
-    .title-icon { width:42px; height:42px; flex:0 0 auto; overflow:visible; }
+    .title-icon { width:84px; height:84px; flex:0 0 auto; overflow:visible; }
     .title { margin:0; font-size:2rem; line-height:1.15; }
     .title-version { font-size:0.95rem; font-weight:400; color:var(--muted); }
     .menu { position:relative; }
@@ -2355,8 +2371,8 @@ String buildConfigPage() {
   page += kLedLogicFaviconUrl;
   page += R"HTML(">
   <style>
-    :root { --bg:#f5efe6; --panel:#fffcf7; --line:#d8c9b8; --text:#1f2a30; --muted:#56656f; --accent:#0b6e4f; --danger:#ab2f2f; }
-    body { margin:0; min-height:100vh; font-family:"Avenir Next","Segoe UI",sans-serif; color:var(--text); background:linear-gradient(160deg,#f8f3ea 0%,var(--bg) 100%); padding:20px; }
+    :root { --bg:#f3eeff; --panel:#fffaff; --line:#ddd0f0; --text:#1a1030; --muted:#6d5a84; --accent:#9b3db8; --danger:#ab2f2f; }
+    body { margin:0; min-height:100vh; font-family:"Avenir Next","Segoe UI",sans-serif; color:var(--text); background:linear-gradient(160deg,#e8f0ff 0%,#f5e6ff 100%); padding:20px; }
     .shell { width:min(1020px,100%); margin:0 auto; display:grid; gap:16px; }
     .panel { background:var(--panel); border:1px solid var(--line); border-radius:20px; padding:20px; }
     .layout { display:grid; grid-template-columns:minmax(280px,360px) minmax(0,1fr); gap:16px; }
@@ -2372,7 +2388,7 @@ String buildConfigPage() {
     .tiny { color:var(--muted); font-size:0.9rem; }
     .link { color:#0f5bbf; font-weight:700; text-decoration:none; }
     .config-title { display:flex; align-items:center; gap:10px; }
-    .config-title-icon { width:42px; height:42px; flex:0 0 auto; overflow:visible; }
+    .config-title-icon { width:84px; height:84px; flex:0 0 auto; overflow:visible; }
     @media (max-width: 860px) { .layout { grid-template-columns:1fr; } }
   </style>
 </head>
@@ -2794,7 +2810,8 @@ void handleOtaCheck() {
     }
   }
 
-  const bool updateAvailable = !remoteVersion.isEmpty() && remoteVersion != firmwareVersion;
+  const bool updateAvailable = !remoteVersion.isEmpty() &&
+                               compareVersionsAlphabetical(remoteVersion, firmwareVersion) > 0;
 
   String response = "{";
   response += "\"currentVersion\":\"" + firmwareVersion + "\",";

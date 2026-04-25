@@ -7,7 +7,8 @@
 #include <WiFi.h>
 #include <driver/rmt.h>
 #include "build_version_override.h"
-#include "assets/icons/led_8884594_64_png.h"
+#include "assets/icons/led_icon_75x75_png.h"
+#include "assets/icons/favicon_ico.h"
 
 namespace {
 constexpr char kAccessPointSsid[] = "ESP32-Config";
@@ -20,8 +21,8 @@ constexpr char kPreferencesNamespace[] = "device-config";
 constexpr char kLedDefaultsVersionKey[] = "ledDefV";
 constexpr uint8_t kLedDefaultsVersion = 3;
 constexpr char kRedirectLocation[] = "http://192.168.4.1/config";
-constexpr char kLedLogicIconUrl[] = "/assets/icons/led_8884594_64.png";
-constexpr char kLedLogicFaviconUrl[] = "/assets/icons/led_8884594_64.png";
+constexpr char kLedLogicIconUrl[] = "/assets/icons/led_icon_75x75.png";
+constexpr char kLedLogicFaviconUrl[] = "/favicon.ico";
 constexpr char kDefaultOtaCheckUrl[] = "https://raw.githubusercontent.com/HJS72/LEDLogic/main/ota/latest.json";
 constexpr char kDefaultOtaBinUrl[] = "https://raw.githubusercontent.com/HJS72/LEDLogic/main/firmware/firmware.bin";
 constexpr uint8_t kLedPin = 5;
@@ -2871,7 +2872,12 @@ void handleOtaUploadData() {
 
 void handleIconPng() {
   webServer.sendHeader("Cache-Control", "public, max-age=86400");
-  webServer.send_P(200, "image/png", reinterpret_cast<const char*>(led_logic_icon_png), led_logic_icon_png_len);
+  webServer.send_P(200, "image/png", reinterpret_cast<const char*>(led_icon_75_png), led_icon_75_png_len);
+}
+
+void handleFaviconIco() {
+  webServer.sendHeader("Cache-Control", "public, max-age=86400");
+  webServer.send_P(200, "image/x-icon", reinterpret_cast<const char*>(led_favicon_ico), led_favicon_ico_len);
 }
 
 void handleCaptiveProbe() {
@@ -2891,6 +2897,7 @@ void configureWebServer() {
   webServer.on("/", HTTP_GET, handleRoot);
   webServer.on("/config", HTTP_GET, handleConfig);
   webServer.on(kLedLogicIconUrl, HTTP_GET, handleIconPng);
+  webServer.on(kLedLogicFaviconUrl, HTTP_GET, handleFaviconIco);
   webServer.on("/script/save", HTTP_POST, handleScriptSave);
   webServer.on("/script/run", HTTP_POST, handleScriptRun);
   webServer.on("/script/stop", HTTP_POST, handleScriptStop);

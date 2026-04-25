@@ -1,41 +1,37 @@
-# ESP32 WLAN Captive Portal
+# LEDLogic
 
-Dieses Projekt startet auf einem ESP32 ein Captive Portal zur WLAN-Konfiguration und steuert einen WS2812-LED-Streifen.
+LEDLogic ist eine webbasierte LED-Steuerung fuer ESP32 mit WS2812-LEDs. 
+Der Fokus liegt auf einer einfachen visuellen Programmierung von LED-Ablaufen direkt im Browser.
 
-Verhalten:
+## Was das Programm macht
 
-- Wenn gespeicherte WLAN-Zugangsdaten vorhanden und erreichbar sind, verbindet sich der ESP32 mit diesem WLAN.
-- Wenn keine Zugangsdaten vorhanden sind oder das WLAN nicht erreichbar ist, startet ein Access Point mit Captive Portal.
-- Wenn gespeicherte Zugangsdaten vorhanden, aber das WLAN nicht erreichbar ist, bleibt das Captive Portal aktiv und der ESP32 versucht parallel im Hintergrund weiter die Verbindung zum konfigurierten WLAN.
-- Sobald die WLAN-Verbindung erfolgreich steht, wird der Access Point beendet.
-- Wenn die WLAN-Verbindung abbricht, aktiviert der ESP32 automatisch wieder den Access Point als Fallback.
-- Im normalen Betriebsmodus (verbunden mit SSID) liegt die LED-Steuerung auf der Startseite `/`.
-- Alle bisherigen WLAN-, Debug- und OTA-Ausgaben/Funktionen liegen auf der separaten Konfigurationsseite `/config`.
+- Steuert einen WS2812-LED-Strip ueber den ESP32 (Daten-Pin GPIO 5).
+- Bietet eine visuelle Script-Oberflaeche mit Drag-and-Drop.
+- Fuehrt LED-Aktionen als Ablauf aus und kann den Ablauf speichern, starten, stoppen und loeschen.
+- Zeigt eine LED-Simulation in der Toolbar, damit das Script-Verhalten sofort sichtbar ist.
 
-## Standardwerte
+## LED-Steuerung im Detail
 
-- AP-SSID: `ESP32-Config`
-- AP-Passwort: `configureme`
-- Konfigurationsseite im AP-Modus: `http://192.168.4.1/config`
+- LED-Anzahl ist einstellbar (1 bis 12).
+- Pro Script-Schritt stehen unter anderem folgende Aktionen zur Verfuegung:
+	- Farbe setzen
+	- Helligkeit setzen
+	- Ueberblenden (Fade)
+	- Warten
+	- Repeat-Block (Start/Ende)
+	- Alles aus
+- Farben koennen ueber ein Farbrad oder per Hex-Textfeld gesetzt werden.
+- Script-Ablauf kann als Loop wiederholt werden.
 
-## WS2812 LED-Steuerung
+## Web-UI
 
-- Daten-Pin: GPIO 5
-- Anzahl LEDs: konfigurierbar von 1 bis 12
-- Jede LED kann einzeln konfiguriert werden:
-	- Aktiv/Inaktiv
-	- Farbe
-	- Helligkeit (0-255)
-
-## OTA Update
-
-Auf `/config` gibt es drei OTA-Wege:
-
-- Version pruefen gegen GitHub URL (`/ota/check`)
-- Direktes Firmware-Update von URL (`/ota/update_url`), z. B. GitHub Release Asset `.bin`
-- Datei-Upload (`/ota/upload`) fuer `.bin`, `.zip` oder `.bin.gz`
-
-Hinweis: Auf ESP32 wird der hochgeladene Stream direkt als Firmware verarbeitet. Praktisch wird meist eine `.bin` verwendet.
+- Obere Aktionsleiste mit:
+	- Speichern
+	- Start
+	- Stop
+	- Loeschen
+- Zustandsanzeige fuer laufendes/gestopptes Script.
+- LED-Simulator neben den Buttons zur schnellen visuellen Kontrolle.
 
 ## Build und Flash
 
@@ -44,3 +40,7 @@ pio run
 pio run -t upload
 pio device monitor
 ```
+
+## Hinweis zu WLAN, Captive Portal und OTA
+
+WLAN-Konfiguration, Captive Portal und OTA-Update sind weiterhin im Projekt vorhanden, stehen bei LEDLogic aber nicht im Vordergrund. Diese Funktionen liegen gesammelt auf der Konfigurationsseite.

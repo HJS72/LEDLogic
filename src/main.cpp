@@ -21,6 +21,8 @@ constexpr uint8_t kLedDefaultsVersion = 3;
 constexpr char kRedirectLocation[] = "http://192.168.4.1/config";
 constexpr char kLedLogicIconUrl[] = "/assets/icons/led_8884594_64.png";
 constexpr char kLedLogicFaviconUrl[] = "/assets/icons/led_8884594_64.png";
+constexpr char kDefaultOtaCheckUrl[] = "https://raw.githubusercontent.com/HJS72/LEDLogic/main/ota/latest.json";
+constexpr char kDefaultOtaBinUrl[] = "https://raw.githubusercontent.com/HJS72/LEDLogic/main/firmware/firmware.bin";
 constexpr uint8_t kLedPin = 5;
 constexpr uint8_t kLedMinCount = 1;
 constexpr uint8_t kLedMaxCount = 12;
@@ -2430,13 +2432,19 @@ String buildConfigPage() {
         <h2>OTA Update</h2>
         <form method="get" action="/ota/check">
           <label for="check-url">GitHub Metadata URL (JSON oder Text)</label>
-          <input id="check-url" name="url" placeholder="https://.../latest.json oder version.txt">
+          <input id="check-url" name="url" placeholder="https://.../latest.json oder version.txt" value=")HTML";
+  page += '"';
+  page += htmlEscape(kDefaultOtaCheckUrl);
+  page += R"HTML(">
           <button class="neutral" type="submit">Version pruefen</button>
         </form>
 
         <form method="post" action="/ota/update_url">
           <label for="bin-url">Direkter Firmware-URL (.bin, z. B. GitHub Release Asset)</label>
-          <input id="bin-url" name="url" placeholder="https://.../firmware.bin">
+          <input id="bin-url" name="url" placeholder="https://.../firmware.bin" value=")HTML";
+  page += '"';
+  page += htmlEscape(kDefaultOtaBinUrl);
+  page += R"HTML(">
           <button class="primary" type="submit">Update von URL starten</button>
         </form>
 

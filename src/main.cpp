@@ -1264,7 +1264,8 @@ String buildLogicPage() {
     .mini-wheel-marker { position:absolute; top:0; left:0; width:12px; height:12px; border-radius:50%; border:2px solid #fff; box-shadow:0 0 0 1px rgba(20,32,51,0.35), 0 2px 8px rgba(20,32,51,0.22); pointer-events:none; transform:translate(-50%, -50%); }
     .color-readout { display:flex; align-items:center; gap:8px; font-weight:700; color:var(--text); }
     .color-swatch { width:18px; height:18px; border-radius:50%; border:1px solid rgba(20,32,51,0.16); }
-    .color-hex { font-family:"SFMono-Regular","Consolas",monospace; font-size:0.82rem; }
+    .color-hex-input { width:96px; padding:5px 7px; border:1px solid rgba(20,32,51,0.22); border-radius:8px; font-family:"SFMono-Regular","Consolas",monospace; font-size:0.78rem; text-transform:uppercase; }
+    .color-hex-input.invalid { border-color:#d85a5a; box-shadow:0 0 0 1px rgba(216,90,90,0.2); }
     @media (max-width: 980px) {
       .logic-layout { grid-template-columns:1fr; }
     }
@@ -1522,11 +1523,20 @@ String buildLogicPage() {
     const chip = control.querySelector('.color-chip-btn');
     const panel = control.querySelector('.mini-wheel-panel');
     const swatch = control.querySelector('.color-swatch');
-    const hexLabel = control.querySelector('.color-hex');
+    const hexField = control.querySelector('.color-hex-input');
     const radius = canvas.width / 2;
     let dragging = false;
 
     drawColorWheel(canvas);
+
+    function normalizeHex(value) {
+      const trimmed = String(value || '').trim();
+      const withHash = trimmed.startsWith('#') ? trimmed : ('#' + trimmed);
+      if (!/^#[0-9a-fA-F]{6}$/.test(withHash)) {
+        return null;
+      }
+      return withHash.toUpperCase();
+    }
 
     function positionMarker(hex) {
       const rgb = hexToRgb(hex);
@@ -1539,7 +1549,8 @@ String buildLogicPage() {
       marker.style.top = top + 'px';
       chip.style.background = hex;
       swatch.style.background = hex;
-      hexLabel.textContent = hex;
+      hexField.value = hex;
+      hexField.classList.remove('invalid');
     }
 
     function updateFromPointer(event) {
@@ -1580,6 +1591,46 @@ String buildLogicPage() {
 
     canvas.addEventListener('pointerleave', () => {
       dragging = false;
+    });
+
+    function applyHexFromText() {
+      const parsed = normalizeHex(hexField.value);
+      if (!parsed) {
+        hexField.classList.add('invalid');
+        return;
+      }
+      input.value = parsed;
+      positionMarker(parsed);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    hexField.addEventListener('input', () => {
+      const parsed = normalizeHex(hexField.value);
+      hexField.classList.toggle('invalid', !parsed);
+    });
+
+    hexField.addEventListener('keydown', event => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        applyHexFromText();
+      }
+    });
+
+    hexField.addEventListener('blur', () => {
+      const parsed = normalizeHex(hexField.value);
+      if (!parsed) {
+        positionMarker(input.value);
+        return;
+      }
+      if (parsed !== input.value) {
+        input.value = parsed;
+        positionMarker(parsed);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+      } else {
+        positionMarker(parsed);
+      }
     });
 
     chip.addEventListener('click', event => {
@@ -1623,7 +1674,7 @@ String buildLogicPage() {
 
   function buildWheelControl(key, value, labelText) {
     const label = labelText ? `<label>${labelText}</label>` : '';
-    return `<div class="field-stack">${label}<div class="mini-wheel-control"><button type="button" class="color-chip-btn" style="background:${value};" title="Farbrad öffnen"></button><div class="mini-wheel-panel"><div class="mini-wheel-stage"><canvas class="mini-wheel" width="96" height="96"></canvas><div class="mini-wheel-marker"></div></div><input type="hidden" data-k="${key}" class="color-wheel-input" value="${value}"><div class="color-readout"><span class="color-swatch" style="background:${value};"></span><span class="color-hex">${value}</span></div></div></div></div>`;
+    return `<div class="field-stack">${label}<div class="mini-wheel-control"><button type="button" class="color-chip-btn" style="background:${value};" title="Farbrad öffnen"></button><div class="mini-wheel-panel"><div class="mini-wheel-stage"><canvas class="mini-wheel" width="96" height="96"></canvas><div class="mini-wheel-marker"></div></div><input type="hidden" data-k="${key}" class="color-wheel-input" value="${value}"><div class="color-readout"><span class="color-swatch" style="background:${value};"></span><input type="text" class="color-hex-input" value="${value}" maxlength="7" spellcheck="false" aria-label="Farbe als Hex eingeben"></div></div></div></div>`;
   }
 
   function readBlockValues(id, type) {

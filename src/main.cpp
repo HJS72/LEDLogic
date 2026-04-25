@@ -38,7 +38,7 @@ enum class ScriptOpType : uint8_t { kSet = 0, kWait = 1, kFade = 2, kAllOff = 3,
 
 struct ScriptStep {
   ScriptOpType op;
-  uint8_t led;           // 0-based
+  uint16_t ledMask;      // bitmask for LED selection
   uint8_t r1, g1, b1;
   uint8_t r2, g2, b2;
   uint8_t brightness;    // 0-255
@@ -383,6 +383,39 @@ static String extractJsonStr(const String& json, const String& key) {
   return json.substring(ci, end);
 }
 
+static uint16_t parseLedMaskFromCsv(const String& csv) {
+  uint16_t mask = 0;
+  int start = 0;
+  while (start < static_cast<int>(csv.length())) {
+    int end = csv.indexOf(',', start);
+    if (end < 0) {
+      end = csv.length();
+    }
+    String token = csv.substring(start, end);
+    token.trim();
+    if (!token.isEmpty()) {
+      const int led = constrain(token.toInt(), 0, kLedMaxCount - 1);
+      mask |= static_cast<uint16_t>(1U << led);
+    }
+    start = end + 1;
+  }
+  return mask;
+}
+
+static uint16_t parseLedMaskFromOp(const String& opJson) {
+  const String ledsCsv = extractJsonStr(opJson, "leds");
+  if (!ledsCsv.isEmpty()) {
+    const uint16_t csvMask = parseLedMaskFromCsv(ledsCsv);
+    if (csvMask != 0) {
+      return csvMask;
+    }
+  }
+
+  // Backward compatibility with older scripts that stored only one LED index.
+  const int led = constrain(extractJsonStr(opJson, "led").toInt(), 0, kLedMaxCount - 1);
+  return static_cast<uint16_t>(1U << led);
+}
+
 static void scriptAllOff() {
   for (uint8_t i = 0; i < kLedMaxCount; ++i) {
     scriptEnabled[i] = false;
@@ -418,7 +451,7 @@ bool parseAndRunScript(const String& json) {
 
     if (opType == "set") {
       step.op = ScriptOpType::kSet;
-      step.led = static_cast<uint8_t>(constrain(extractJsonStr(opJson, "led").toInt(), 0, kLedMaxCount - 1));
+      step.ledMask = parseLedMaskFromOp(opJson);
       parseHexColor(extractJsonStr(opJson, "color"), step.r1, step.g1, step.b1);
       const int br = extractJsonStr(opJson, "br").toInt();
       step.brightness = static_cast<uint8_t>(constrain(br * 255 / 100, 0, 255));
@@ -427,12 +460,12 @@ bool parseAndRunScript(const String& json) {
       step.durationMs = static_cast<uint32_t>(extractJsonStr(opJson, "s").toFloat() * 1000.0f);
     } else if (opType == "brightness") {
       step.op = ScriptOpType::kBrightness;
-      step.led = static_cast<uint8_t>(constrain(extractJsonStr(opJson, "led").toInt(), 0, kLedMaxCount - 1));
+      step.ledMask = parseLedMaskFromOp(opJson);
       const int br = extractJsonStr(opJson, "br").toInt();
       step.brightness = static_cast<uint8_t>(constrain(br * 255 / 100, 0, 255));
     } else if (opType == "fade") {
       step.op = ScriptOpType::kFade;
-      step.led = static_cast<uint8_t>(constrain(extractJsonStr(opJson, "led").toInt(), 0, kLedMaxCount - 1));
+      step.ledMask = parseLedMaskFromOp(opJson);
       parseHexColor(extractJsonStr(opJson, "from"), step.r1, step.g1, step.b1);
       parseHexColor(extractJsonStr(opJson, "to"), step.r2, step.g2, step.b2);
       step.durationMs = static_cast<uint32_t>(extractJsonStr(opJson, "s").toFloat() * 1000.0f);
@@ -460,11 +493,16 @@ bool parseAndRunScript(const String& json) {
   // Execute first SET/ALLOFF immediately
   const ScriptStep& first = scriptSteps[0];
   if (first.op == ScriptOpType::kSet) {
-    scriptEnabled[first.led] = true;
-    scriptR[first.led] = first.r1;
-    scriptG[first.led] = first.g1;
-    scriptB[first.led] = first.b1;
-    scriptBr[first.led] = first.brightness;
+    for (uint8_t led = 0; led < kLedMaxCount; ++led) {
+      if ((first.ledMask & static_cast<uint16_t>(1U << led)) == 0) {
+        continue;
+      }
+      scriptEnabled[led] = true;
+      scriptR[led] = first.r1;
+      scriptG[led] = first.g1;
+      scriptB[led] = first.b1;
+      scriptBr[led] = first.brightness;
+    }
     ws2812Show();
   } else if (first.op == ScriptOpType::kAllOff) {
     scriptAllOff();
@@ -514,11 +552,16 @@ void tickScript() {
 
   switch (step.op) {
     case ScriptOpType::kSet:
-      scriptEnabled[step.led] = true;
-      scriptR[step.led] = step.r1;
-      scriptG[step.led] = step.g1;
-      scriptB[step.led] = step.b1;
-      scriptBr[step.led] = step.brightness;
+      for (uint8_t led = 0; led < kLedMaxCount; ++led) {
+        if ((step.ledMask & static_cast<uint16_t>(1U << led)) == 0) {
+          continue;
+        }
+        scriptEnabled[led] = true;
+        scriptR[led] = step.r1;
+        scriptG[led] = step.g1;
+        scriptB[led] = step.b1;
+        scriptBr[led] = step.brightness;
+      }
       ws2812Show();
       advance = true;
       break;
@@ -536,28 +579,43 @@ void tickScript() {
       break;
 
     case ScriptOpType::kBrightness:
-      scriptEnabled[step.led] = true;
-      scriptBr[step.led] = step.brightness;
+      for (uint8_t led = 0; led < kLedMaxCount; ++led) {
+        if ((step.ledMask & static_cast<uint16_t>(1U << led)) == 0) {
+          continue;
+        }
+        scriptEnabled[led] = true;
+        scriptBr[led] = step.brightness;
+      }
       ws2812Show();
       advance = true;
       break;
 
     case ScriptOpType::kFade:
       if (step.durationMs == 0 || elapsed >= step.durationMs) {
-        scriptEnabled[step.led] = true;
-        scriptR[step.led] = step.r2;
-        scriptG[step.led] = step.g2;
-        scriptB[step.led] = step.b2;
-        scriptBr[step.led] = step.brightness;
+        for (uint8_t led = 0; led < kLedMaxCount; ++led) {
+          if ((step.ledMask & static_cast<uint16_t>(1U << led)) == 0) {
+            continue;
+          }
+          scriptEnabled[led] = true;
+          scriptR[led] = step.r2;
+          scriptG[led] = step.g2;
+          scriptB[led] = step.b2;
+          scriptBr[led] = step.brightness;
+        }
         ws2812Show();
         advance = true;
       } else {
         const uint32_t t256 = (elapsed * 256UL) / step.durationMs;
-        scriptEnabled[step.led] = true;
-        scriptR[step.led] = static_cast<uint8_t>((step.r1 * (256 - t256) + step.r2 * t256) >> 8);
-        scriptG[step.led] = static_cast<uint8_t>((step.g1 * (256 - t256) + step.g2 * t256) >> 8);
-        scriptB[step.led] = static_cast<uint8_t>((step.b1 * (256 - t256) + step.b2 * t256) >> 8);
-        scriptBr[step.led] = step.brightness;
+        for (uint8_t led = 0; led < kLedMaxCount; ++led) {
+          if ((step.ledMask & static_cast<uint16_t>(1U << led)) == 0) {
+            continue;
+          }
+          scriptEnabled[led] = true;
+          scriptR[led] = static_cast<uint8_t>((step.r1 * (256 - t256) + step.r2 * t256) >> 8);
+          scriptG[led] = static_cast<uint8_t>((step.g1 * (256 - t256) + step.g2 * t256) >> 8);
+          scriptB[led] = static_cast<uint8_t>((step.b1 * (256 - t256) + step.b2 * t256) >> 8);
+          scriptBr[led] = step.brightness;
+        }
         ws2812Show();
       }
       break;
@@ -1671,13 +1729,13 @@ String buildLogicPage() {
 
   function defaultValuesForType(type) {
     if (type === 'set_color') {
-      return { led: '0', color: '#FF0000', br: '100' };
+      return { leds: '0', color: '#FF0000', br: '100' };
     }
     if (type === 'set_brightness') {
-      return { led: '0', br: '100' };
+      return { leds: '0', br: '100' };
     }
     if (type === 'fade') {
-      return { led: '0', from: '#FF0000', to: '#0000FF', br: '100', s: '1.0' };
+      return { leds: '0', from: '#FF0000', to: '#0000FF', br: '100', s: '1.0' };
     }
     if (type === 'wait') {
       return { s: '1.0' };
@@ -1688,10 +1746,45 @@ String buildLogicPage() {
     return {};
   }
 
-  function ledOptions(selected) {
+  function normalizeLedCsv(value) {
+    const seen = new Set();
+    const result = [];
+    String(value || '')
+      .split(',')
+      .map(part => part.trim())
+      .filter(part => part !== '')
+      .forEach(part => {
+        const index = Number.parseInt(part, 10);
+        if (!Number.isInteger(index) || index < 0 || index >= MAX_LEDS || seen.has(index)) {
+          return;
+        }
+        seen.add(index);
+        result.push(index);
+      });
+    if (result.length === 0) {
+      result.push(0);
+    }
+    return result;
+  }
+
+  function readSelectedLeds(el) {
+    const field = el.querySelector('[data-k="leds"]');
+    if (!field) {
+      return [0];
+    }
+    const selected = Array.from(field.selectedOptions).map(option => Number.parseInt(option.value, 10));
+    const valid = selected.filter(index => Number.isInteger(index) && index >= 0 && index < MAX_LEDS);
+    if (valid.length > 0) {
+      return valid;
+    }
+    return normalizeLedCsv(field.dataset.fallback || field.value || '0');
+  }
+
+  function ledOptions(selectedCsv) {
+    const selectedSet = new Set(normalizeLedCsv(selectedCsv));
     let options = '';
     for (let i = 0; i < MAX_LEDS; i += 1) {
-      options += `<option value="${i}"${String(selected) === String(i) ? ' selected' : ''}>LED ${i + 1}</option>`;
+      options += `<option value="${i}"${selectedSet.has(i) ? ' selected' : ''}>LED ${i + 1}</option>`;
     }
     return options;
   }
@@ -1711,13 +1804,13 @@ String buildLogicPage() {
       return field ? field.value : null;
     };
     if (type === 'set_color') {
-      return { led: get('led'), color: get('color'), br: get('br') };
+      return { leds: get('leds'), color: get('color'), br: get('br') };
     }
     if (type === 'set_brightness') {
-      return { led: get('led'), br: get('br') };
+      return { leds: get('leds'), br: get('br') };
     }
     if (type === 'fade') {
-      return { led: get('led'), from: get('from'), to: get('to'), br: get('br'), s: get('s') };
+      return { leds: get('leds'), from: get('from'), to: get('to'), br: get('br'), s: get('s') };
     }
     if (type === 'wait') {
       return { s: get('s') };
@@ -1749,17 +1842,22 @@ String buildLogicPage() {
     const type = el.dataset.type;
     const values = readBlockValues(id, type);
     const step = { op: type };
+    const selectedLeds = readSelectedLeds(el);
+    const ledsCsv = selectedLeds.join(',');
     if (type === 'set_color') {
       step.op = 'set';
-      step.led = parseInt(values.led, 10);
+      step.led = selectedLeds[0];
+      step.leds = ledsCsv;
       step.color = values.color;
       step.br = parseInt(values.br, 10);
     } else if (type === 'set_brightness') {
       step.op = 'brightness';
-      step.led = parseInt(values.led, 10);
+      step.led = selectedLeds[0];
+      step.leds = ledsCsv;
       step.br = parseInt(values.br, 10);
     } else if (type === 'fade') {
-      step.led = parseInt(values.led, 10);
+      step.led = selectedLeds[0];
+      step.leds = ledsCsv;
       step.from = values.from;
       step.to = values.to;
       step.br = parseInt(values.br, 10);
@@ -1901,17 +1999,22 @@ String buildLogicPage() {
       }
 
       const step = payload.ops[stepIndex];
+      const targetLeds = normalizeLedCsv(step.leds || String(step.led));
       if (step.op === 'set') {
         const rgb = hexToRgb(step.color || '#000000');
-        state[step.led] = { enabled: true, r: rgb.r, g: rgb.g, b: rgb.b, br: Number.isFinite(step.br) ? step.br : 100 };
+        targetLeds.forEach(ledIndex => {
+          state[ledIndex] = { enabled: true, r: rgb.r, g: rgb.g, b: rgb.b, br: Number.isFinite(step.br) ? step.br : 100 };
+        });
         applyLedPreviewState(state);
         scheduleLedPreviewNext(() => runStep(stepIndex + 1), 0);
         return;
       }
 
       if (step.op === 'brightness') {
-        const current = state[step.led] || { enabled: false, r: 0, g: 0, b: 0, br: 0 };
-        state[step.led] = { ...current, enabled: true, br: Number.isFinite(step.br) ? step.br : current.br };
+        targetLeds.forEach(ledIndex => {
+          const current = state[ledIndex] || { enabled: false, r: 0, g: 0, b: 0, br: 0 };
+          state[ledIndex] = { ...current, enabled: true, br: Number.isFinite(step.br) ? step.br : current.br };
+        });
         applyLedPreviewState(state);
         scheduleLedPreviewNext(() => runStep(stepIndex + 1), 0);
         return;
@@ -1937,7 +2040,9 @@ String buildLogicPage() {
         const duration = Math.max(0, (step.s || 0) * 1000);
         const brightness = Number.isFinite(step.br) ? step.br : 100;
         if (duration === 0) {
-          state[step.led] = { enabled: true, r: to.r, g: to.g, b: to.b, br: brightness };
+          targetLeds.forEach(ledIndex => {
+            state[ledIndex] = { enabled: true, r: to.r, g: to.g, b: to.b, br: brightness };
+          });
           applyLedPreviewState(state);
           scheduleLedPreviewNext(() => runStep(stepIndex + 1), 0);
           return;
@@ -1949,13 +2054,15 @@ String buildLogicPage() {
             return;
           }
           const progress = Math.min(1, (now - startTime) / duration);
-          state[step.led] = {
-            enabled: true,
-            r: Math.round(from.r + (to.r - from.r) * progress),
-            g: Math.round(from.g + (to.g - from.g) * progress),
-            b: Math.round(from.b + (to.b - from.b) * progress),
-            br: brightness
-          };
+          targetLeds.forEach(ledIndex => {
+            state[ledIndex] = {
+              enabled: true,
+              r: Math.round(from.r + (to.r - from.r) * progress),
+              g: Math.round(from.g + (to.g - from.g) * progress),
+              b: Math.round(from.b + (to.b - from.b) * progress),
+              br: brightness
+            };
+          });
           applyLedPreviewState(state);
           if (progress < 1) {
             ledPreviewFrameId = requestAnimationFrame(animateFade);
@@ -2121,6 +2228,7 @@ String buildLogicPage() {
 
     steps.forEach(step => {
       const values = step.values || defaultValuesForType(step.type);
+      const selectedLeds = values.leds || values.led || '0';
       const div = document.createElement('div');
       div.className = 'block block-action block-' + step.type;
       div.id = 'block_' + step.id;
@@ -2160,11 +2268,11 @@ String buildLogicPage() {
 
       let inner = '';
       if (step.type === 'set_color') {
-        inner = `<span class="block-label">Farbe</span><div class="field-inline"><label>LED</label><select data-k="led">${ledOptions(values.led)}</select></div><div class="field-inline"><label>Farbe</label>${buildWheelControl('color', values.color, '')}</div><div class="field-inline"><label>Helligkeit</label><div class="number-wrap"><input type="number" data-k="br" value="${values.br}" min="0" max="100" style="width:68px"><span>%</span></div></div>`;
+        inner = `<span class="block-label">Farbe</span><div class="field-inline"><label>LEDs</label><select data-k="leds" data-fallback="${selectedLeds}" multiple size="2" style="min-width:110px;">${ledOptions(selectedLeds)}</select></div><div class="field-inline"><label>Farbe</label>${buildWheelControl('color', values.color, '')}</div><div class="field-inline"><label>Helligkeit</label><div class="number-wrap"><input type="number" data-k="br" value="${values.br}" min="0" max="100" style="width:68px"><span>%</span></div></div>`;
       } else if (step.type === 'set_brightness') {
-        inner = `<span class="block-label">Helligkeit</span><div class="field-inline"><label>LED</label><select data-k="led">${ledOptions(values.led)}</select></div><div class="field-inline"><label>Wert</label><div class="number-wrap"><input type="number" data-k="br" value="${values.br}" min="0" max="100" style="width:68px"><span>%</span></div></div>`;
+        inner = `<span class="block-label">Helligkeit</span><div class="field-inline"><label>LEDs</label><select data-k="leds" data-fallback="${selectedLeds}" multiple size="2" style="min-width:110px;">${ledOptions(selectedLeds)}</select></div><div class="field-inline"><label>Wert</label><div class="number-wrap"><input type="number" data-k="br" value="${values.br}" min="0" max="100" style="width:68px"><span>%</span></div></div>`;
       } else if (step.type === 'fade') {
-        inner = `<span class="block-label">Blend</span><div class="field-inline"><label>LED</label><select data-k="led">${ledOptions(values.led)}</select></div><div class="field-inline"><label>Von</label>${buildWheelControl('from', values.from, '')}</div><div class="field-inline"><label>Nach</label>${buildWheelControl('to', values.to, '')}</div><div class="field-inline"><label>Helligkeit</label><div class="number-wrap"><input type="number" data-k="br" value="${values.br}" min="0" max="100" style="width:68px"><span>%</span></div></div><div class="field-inline"><label>Dauer</label><div class="number-wrap"><input type="number" data-k="s" value="${values.s}" min="0" max="30" step="0.5" style="width:68px"><span>s</span></div></div>`;
+        inner = `<span class="block-label">Blend</span><div class="field-inline"><label>LEDs</label><select data-k="leds" data-fallback="${selectedLeds}" multiple size="2" style="min-width:110px;">${ledOptions(selectedLeds)}</select></div><div class="field-inline"><label>Von</label>${buildWheelControl('from', values.from, '')}</div><div class="field-inline"><label>Nach</label>${buildWheelControl('to', values.to, '')}</div><div class="field-inline"><label>Helligkeit</label><div class="number-wrap"><input type="number" data-k="br" value="${values.br}" min="0" max="100" style="width:68px"><span>%</span></div></div><div class="field-inline"><label>Dauer</label><div class="number-wrap"><input type="number" data-k="s" value="${values.s}" min="0" max="30" step="0.5" style="width:68px"><span>s</span></div></div>`;
       } else if (step.type === 'wait') {
         inner = `<span class="block-label">Warten</span><div class="field-inline"><label>Dauer</label><div class="number-wrap"><input type="number" data-k="s" value="${values.s}" min="0" max="30" step="0.5" style="width:68px"><span>s</span></div></div>`;
       } else if (step.type === 'repeat_start') {
@@ -2375,6 +2483,16 @@ String buildConfigPage() {
     body { margin:0; min-height:100vh; font-family:"Avenir Next","Segoe UI",sans-serif; color:var(--text); background:linear-gradient(160deg,#e8f0ff 0%,#f5e6ff 100%); padding:20px; }
     .shell { width:min(1020px,100%); margin:0 auto; display:grid; gap:16px; }
     .panel { background:var(--panel); border:1px solid var(--line); border-radius:20px; padding:20px; }
+    .topbar { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:4px; }
+    .menu { position:relative; }
+    .menu summary { list-style:none; }
+    .menu summary::-webkit-details-marker { display:none; }
+    .menu-button { border:1px solid var(--line); border-radius:12px; padding:10px 14px; background:#ffffff; font-weight:700; cursor:pointer; color:var(--text); }
+    .menu-icon { font-size:1.2rem; line-height:1; }
+    .menu[open] .menu-button { border-color:#9e82cb; box-shadow:0 4px 14px rgba(26,16,48,0.14); }
+    .menu-list { position:absolute; top:46px; left:0; min-width:180px; display:grid; gap:2px; background:#fff; border:1px solid var(--line); border-radius:12px; padding:6px; box-shadow:0 10px 24px rgba(26,16,48,0.18); z-index:20; }
+    .menu-list a { display:block; padding:10px 12px; border-radius:8px; text-decoration:none; font-weight:700; color:var(--text); }
+    .menu-list a:hover { background:#f2eaff; }
     .layout { display:grid; grid-template-columns:minmax(280px,360px) minmax(0,1fr); gap:16px; }
     .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; }
     .pill { border:1px solid var(--line); border-radius:14px; padding:10px 12px; background:#fff; }
@@ -2395,15 +2513,23 @@ String buildConfigPage() {
 <body>
   <main class="shell">
     <section class="panel">
-      <div class="config-title">
-        <svg class="config-title-icon" viewBox="0 0 64 64" aria-hidden="true">
-          <image href=")HTML";
+      <div class="topbar">
+        <details class="menu">
+          <summary class="menu-button" aria-label="Menü"><span class="menu-icon">&#9776;</span></summary>
+          <nav class="menu-list">
+            <a href="/">LED-Logic</a>
+            <a href="/config">Konfiguration</a>
+          </nav>
+        </details>
+        <div class="config-title">
+          <svg class="config-title-icon" viewBox="0 0 64 64" aria-hidden="true">
+            <image href=")HTML";
   page += kLedLogicIconUrl;
   page += R"HTML(" x="-2" y="-2" width="68" height="68" preserveAspectRatio="xMidYMid slice"/>
-        </svg>
-        <h1>Konfigurationsseite</h1>
+          </svg>
+          <h1>Konfigurationsseite</h1>
+        </div>
       </div>
-      <p><a class="link" href="/">Zurück zur Startseite</a></p>
       <div class="grid">
         <div class="pill"><strong>WLAN-Status</strong><br><span id="wifi-status"></span></div>
         <div class="pill"><strong>Betriebsmodus</strong><br><span id="operation-mode"></span></div>

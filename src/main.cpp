@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <DNSServer.h>
 #include <HTTPClient.h>
+#include <LittleFS.h>
 #include <Preferences.h>
 #include <Update.h>
 #include <WebServer.h>
@@ -32,6 +33,9 @@ constexpr unsigned long kLedPreviewTimeoutMs = 30000;
 constexpr unsigned long kLedAnimationFrameMs = 40;
 constexpr uint8_t kMaxScriptSteps = 48;
 constexpr size_t kMaxScriptJsonLen = 4096;
+constexpr char kScriptDir[] = "/scripts";
+constexpr uint8_t kScriptMaxNameLen = 32;
+constexpr uint8_t kMaxSavedScripts = 20;
 
 // ---- Script system ----
 enum class ScriptOpType : uint8_t { kSet = 0, kWait = 1, kFade = 2, kAllOff = 3, kBrightness = 4 };
@@ -1348,6 +1352,17 @@ String buildLogicPage() {
     .color-swatch { width:18px; height:18px; border-radius:50%; border:1px solid rgba(20,32,51,0.16); }
     .color-hex-input { width:96px; padding:5px 7px; border:1px solid rgba(20,32,51,0.22); border-radius:8px; font-family:"SFMono-Regular","Consolas",monospace; font-size:0.78rem; text-transform:uppercase; }
     .color-hex-input.invalid { border-color:#d85a5a; box-shadow:0 0 0 1px rgba(216,90,90,0.2); }
+    .script-library { display:grid; gap:8px; padding:10px; border:1px solid rgba(149,169,200,0.24); border-radius:12px; background:linear-gradient(180deg,rgba(255,255,255,0.96),rgba(242,247,253,0.92)); }
+    .script-lib-title { font-size:0.74rem; font-weight:700; letter-spacing:0.03em; text-transform:uppercase; color:var(--muted); }
+    .script-lib-save-row { display:flex; gap:6px; align-items:center; }
+    .script-lib-save-row input { flex:1; min-width:60px; margin:0; padding:7px 10px; font-size:0.85rem; }
+    .script-lib-save-row button { padding:7px 10px; border-radius:10px; white-space:nowrap; flex-shrink:0; }
+    .script-lib-list { display:grid; gap:4px; max-height:200px; overflow-y:auto; }
+    .script-lib-item { display:flex; align-items:center; gap:4px; background:#fff; border:1px solid rgba(149,169,200,0.24); border-radius:8px; padding:5px 7px; }
+    .script-lib-name { flex:1; font-size:0.85rem; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
+    .script-lib-btn { padding:3px 8px; border-radius:7px; font-size:0.78rem; cursor:pointer; border:1px solid var(--line); background:#f0f4ff; color:#2f67c8; }
+    .script-lib-btn.del { background:#fff1f1; color:#ba3f45; border-color:rgba(216,90,90,0.3); }
+    .script-lib-empty { font-size:0.82rem; color:var(--muted); }
     @media (max-width: 980px) {
       .logic-layout { grid-template-columns:1fr; }
     }
@@ -1457,6 +1472,14 @@ String buildLogicPage() {
         <div class="tool-item tool-wait" draggable="true" data-tool="wait">Warten</div>
         <div class="tool-item tool-repeat_start" draggable="true" data-tool="repeat">Repeat</div>
         <div class="tool-item tool-all_off" draggable="true" data-tool="all_off">Alles aus</div>
+        <div class="script-library">
+          <div class="script-lib-title">Script-Bibliothek</div>
+          <div class="script-lib-save-row">
+            <input type="text" id="scriptNameInput" placeholder="Name..." maxlength="32">
+            <button type="button" class="script-lib-btn" onclick="saveScriptToLib()">Speichern</button>
+          </div>
+          <div id="scriptLibList" class="script-lib-list"><div class="script-lib-empty">Lade...</div></div>
+        </div>
       </aside>
 
       <section class="script-canvas" id="scriptCanvas">
@@ -2454,10 +2477,105 @@ String buildLogicPage() {
     }
     closeAllColorWheels();
   });
+  function escapeHtml(text) {
+    return String(text).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function stepsFromOps(ops) {
+    const result = [];
+    for (let i = 0; i < ops.length; i++) {
+      const op = ops[i];
+      const id = Date.now() + i * 1000 + Math.floor(Math.random() * 1000);
+      if (op.op === 'set') {
+        result.push({ id, type: 'set_color', values: { leds: op.leds || String(op.led != null ? op.led : 0), color: op.color || '#FF0000', br: String(op.br != null ? op.br : 100) } });
+      } else if (op.op === 'brightness') {
+        result.push({ id, type: 'set_brightness', values: { leds: op.leds || String(op.led != null ? op.led : 0), br: String(op.br != null ? op.br : 100) } });
+      } else if (op.op === 'fade') {
+        result.push({ id, type: 'fade', values: { leds: op.leds || String(op.led != null ? op.led : 0), from: op.from || '#FF0000', to: op.to || '#0000FF', br: String(op.br != null ? op.br : 100), s: String(op.s != null ? op.s : 1) } });
+      } else if (op.op === 'wait') {
+        result.push({ id, type: 'wait', values: { s: String(op.s != null ? op.s : 1) } });
+      } else if (op.op === 'all_off') {
+        result.push({ id, type: 'all_off', values: {} });
+      }
+    }
+    return result;
+  }
+
+  function loadScriptLibrary() {
+    fetch('/scripts/list')
+      .then(r => r.json())
+      .then(data => {
+        const listEl = document.getElementById('scriptLibList');
+        if (!data.scripts || data.scripts.length === 0) {
+          listEl.innerHTML = '<div class="script-lib-empty">Keine Scripts gespeichert.</div>';
+          return;
+        }
+        listEl.innerHTML = data.scripts.map(name =>
+          '<div class="script-lib-item">' +
+          '<span class="script-lib-name" title="' + escapeHtml(name) + '">' + escapeHtml(name) + '</span>' +
+          '<button class="script-lib-btn" onclick="loadScriptFromLib(' + JSON.stringify(name) + ')">Laden</button>' +
+          '<button class="script-lib-btn del" onclick="deleteScriptFromLib(' + JSON.stringify(name) + ')">&#10005;</button>' +
+          '</div>'
+        ).join('');
+      })
+      .catch(() => {
+        const listEl = document.getElementById('scriptLibList');
+        if (listEl) listEl.innerHTML = '<div class="script-lib-empty">Fehler beim Laden.</div>';
+      });
+  }
+
+  function saveScriptToLib() {
+    const nameInput = document.getElementById('scriptNameInput');
+    const name = nameInput ? nameInput.value.trim() : '';
+    if (!name) { setStatus('Bitte einen Namen für das Script eingeben.', false); return; }
+    const payload = buildPayload();
+    if (payload.error) { setStatus(payload.error, false); return; }
+    if (!payload.ops || payload.ops.length === 0) { setStatus('Keine Schritte definiert.', false); return; }
+    fetch('/scripts/slot/save?name=' + encodeURIComponent(name), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    }).then(r => {
+      if (r.ok) {
+        setStatus('Script "' + name + '" in Bibliothek gespeichert.', false);
+        if (nameInput) nameInput.value = '';
+        loadScriptLibrary();
+      } else {
+        r.text().then(t => setStatus('Fehler: ' + t, false));
+      }
+    }).catch(() => setStatus('Verbindungsfehler.', false));
+  }
+
+  function loadScriptFromLib(name) {
+    fetch('/scripts/slot/load?name=' + encodeURIComponent(name))
+      .then(r => { if (!r.ok) throw new Error(); return r.json(); })
+      .then(data => {
+        syncStepsFromDom();
+        steps = stepsFromOps(data.ops || []);
+        scriptLoopEnabled = !!data.loop;
+        renderList();
+        setStatus('Script "' + name + '" geladen.', false);
+        if (ledSimulatorRunning) { startLedPreviewPlayback(); }
+      })
+      .catch(() => setStatus('Laden fehlgeschlagen.', false));
+  }
+
+  function deleteScriptFromLib(name) {
+    fetch('/scripts/slot/delete?name=' + encodeURIComponent(name), { method: 'POST' })
+      .then(r => {
+        if (r.ok) {
+          setStatus('Script "' + name + '" gelöscht.', false);
+          loadScriptLibrary();
+        }
+      })
+      .catch(() => {});
+  }
+
   syncLedCountSelect();
   syncToolbarStates();
   setupToolboxDnD();
   renderList();
+  loadScriptLibrary();
 </script>
 </body>
 </html>)HTML";
@@ -2822,6 +2940,140 @@ void handleLedSave() {
   webServer.send(302, "text/plain", "Saved");
 }
 
+String sanitizeScriptName(const String& name) {
+  String out;
+  for (size_t i = 0; i < name.length() && out.length() < kScriptMaxNameLen; ++i) {
+    const char c = name[i];
+    if (isAlphaNumeric(c) || c == ' ' || c == '-' || c == '_') {
+      out += c;
+    }
+  }
+  out.trim();
+  return out;
+}
+
+String scriptFilePath(const String& displayName) {
+  String safe = sanitizeScriptName(displayName);
+  for (size_t i = 0; i < safe.length(); ++i) {
+    if (safe[i] == ' ') safe[i] = '_';
+  }
+  return String(kScriptDir) + "/" + safe + ".json";
+}
+
+void handleScriptsList() {
+  if (!LittleFS.exists(kScriptDir)) {
+    webServer.send(200, "application/json", "{\"scripts\":[]}");
+    return;
+  }
+  File dir = LittleFS.open(kScriptDir);
+  if (!dir || !dir.isDirectory()) {
+    webServer.send(200, "application/json", "{\"scripts\":[]}");
+    return;
+  }
+  String json = "{\"scripts\":[";
+  bool first = true;
+  File f = dir.openNextFile();
+  while (f) {
+    if (!f.isDirectory()) {
+      String fullPath = f.name();
+      const int slashPos = fullPath.lastIndexOf('/');
+      String fname = (slashPos >= 0) ? fullPath.substring(slashPos + 1) : fullPath;
+      if (fname.endsWith(".json")) {
+        String displayName = fname.substring(0, fname.length() - 5);
+        for (size_t i = 0; i < displayName.length(); ++i) {
+          if (displayName[i] == '_') displayName[i] = ' ';
+        }
+        if (!first) json += ",";
+        json += "\"" + jsonEscape(displayName) + "\"";
+        first = false;
+      }
+    }
+    f.close();
+    f = dir.openNextFile();
+  }
+  dir.close();
+  json += "]}";
+  webServer.send(200, "application/json", json);
+}
+
+void handleScriptSlotSave() {
+  if (!webServer.hasArg("name") || !webServer.hasArg("plain")) {
+    webServer.send(400, "text/plain", "name oder Body fehlt");
+    return;
+  }
+  const String sanitized = sanitizeScriptName(webServer.arg("name"));
+  if (sanitized.isEmpty()) {
+    webServer.send(400, "text/plain", "Ungültiger Name");
+    return;
+  }
+  const String json = webServer.arg("plain");
+  if (json.length() > kMaxScriptJsonLen) {
+    webServer.send(413, "text/plain", "Script zu gross");
+    return;
+  }
+  if (!validateScriptJson(json)) {
+    webServer.send(400, "text/plain", "Script ungültig");
+    return;
+  }
+  if (!LittleFS.exists(kScriptDir)) {
+    LittleFS.mkdir(kScriptDir);
+  }
+  const String path = scriptFilePath(sanitized);
+  File f = LittleFS.open(path, "w");
+  if (!f) {
+    webServer.send(500, "text/plain", "Speichern fehlgeschlagen");
+    return;
+  }
+  f.print(json);
+  f.close();
+  appendLog("Script in Bibliothek gespeichert: " + sanitized);
+  webServer.send(204, "text/plain", "");
+}
+
+void handleScriptSlotLoad() {
+  if (!webServer.hasArg("name")) {
+    webServer.send(400, "text/plain", "name fehlt");
+    return;
+  }
+  const String sanitized = sanitizeScriptName(webServer.arg("name"));
+  if (sanitized.isEmpty()) {
+    webServer.send(400, "text/plain", "Ungültiger Name");
+    return;
+  }
+  const String path = scriptFilePath(sanitized);
+  if (!LittleFS.exists(path)) {
+    webServer.send(404, "text/plain", "Script nicht gefunden");
+    return;
+  }
+  File f = LittleFS.open(path, "r");
+  if (!f) {
+    webServer.send(500, "text/plain", "Laden fehlgeschlagen");
+    return;
+  }
+  webServer.streamFile(f, "application/json");
+  f.close();
+}
+
+void handleScriptSlotDelete() {
+  if (!webServer.hasArg("name")) {
+    webServer.send(400, "text/plain", "name fehlt");
+    return;
+  }
+  const String sanitized = sanitizeScriptName(webServer.arg("name"));
+  if (sanitized.isEmpty()) {
+    webServer.send(400, "text/plain", "Ungültiger Name");
+    return;
+  }
+  const String path = scriptFilePath(sanitized);
+  if (!LittleFS.exists(path)) {
+    webServer.send(404, "text/plain", "Script nicht gefunden");
+    return;
+  }
+  LittleFS.remove(path);
+  appendLog("Script aus Bibliothek gelöscht: " + sanitized);
+  webServer.send(204, "text/plain", "");
+}
+
 void handleScriptRun() {
   if (!webServer.hasArg("plain")) {
     webServer.send(400, "text/plain", "Body fehlt");
@@ -3045,6 +3297,10 @@ void configureWebServer() {
   webServer.on("/script/run", HTTP_POST, handleScriptRun);
   webServer.on("/script/stop", HTTP_POST, handleScriptStop);
   webServer.on("/script/clear", HTTP_POST, handleScriptClear);
+  webServer.on("/scripts/list", HTTP_GET, handleScriptsList);
+  webServer.on("/scripts/slot/save", HTTP_POST, handleScriptSlotSave);
+  webServer.on("/scripts/slot/load", HTTP_GET, handleScriptSlotLoad);
+  webServer.on("/scripts/slot/delete", HTTP_POST, handleScriptSlotDelete);
   webServer.on("/status", HTTP_GET, handleStatus);
   webServer.on("/scan", HTTP_GET, handleScan);
   webServer.on("/save", HTTP_POST, handleSave);
@@ -3108,6 +3364,12 @@ void setup() {
   delay(400);
   appendLog("ESP32 startet.");
   appendLog("Firmware-Version: " + firmwareVersion);
+
+  if (!LittleFS.begin(true)) {
+    appendLog("LittleFS: Initialisierung fehlgeschlagen.");
+  } else {
+    LittleFS.mkdir(kScriptDir);
+  }
 
   initWs2812Rmt();
   // Mehrfach senden, damit beim Boot sicher ein OFF-Frame anliegt.

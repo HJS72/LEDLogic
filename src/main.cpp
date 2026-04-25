@@ -1352,17 +1352,16 @@ String buildLogicPage() {
     .color-swatch { width:18px; height:18px; border-radius:50%; border:1px solid rgba(20,32,51,0.16); }
     .color-hex-input { width:96px; padding:5px 7px; border:1px solid rgba(20,32,51,0.22); border-radius:8px; font-family:"SFMono-Regular","Consolas",monospace; font-size:0.78rem; text-transform:uppercase; }
     .color-hex-input.invalid { border-color:#d85a5a; box-shadow:0 0 0 1px rgba(216,90,90,0.2); }
-    .script-library { display:grid; gap:8px; padding:10px; border:1px solid rgba(149,169,200,0.24); border-radius:12px; background:linear-gradient(180deg,rgba(255,255,255,0.96),rgba(242,247,253,0.92)); }
-    .script-lib-title { font-size:0.74rem; font-weight:700; letter-spacing:0.03em; text-transform:uppercase; color:var(--muted); }
-    .script-lib-save-row { display:flex; gap:6px; align-items:center; }
-    .script-lib-save-row input { flex:1; min-width:60px; margin:0; padding:7px 10px; font-size:0.85rem; }
-    .script-lib-save-row button { padding:7px 10px; border-radius:10px; white-space:nowrap; flex-shrink:0; }
-    .script-lib-list { display:grid; gap:4px; max-height:200px; overflow-y:auto; }
-    .script-lib-item { display:flex; align-items:center; gap:4px; background:#fff; border:1px solid rgba(149,169,200,0.24); border-radius:8px; padding:5px 7px; }
-    .script-lib-name { flex:1; font-size:0.85rem; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
-    .script-lib-btn { padding:3px 8px; border-radius:7px; font-size:0.78rem; cursor:pointer; border:1px solid var(--line); background:#f0f4ff; color:#2f67c8; }
-    .script-lib-btn.del { background:#fff1f1; color:#ba3f45; border-color:rgba(216,90,90,0.3); }
-    .script-lib-empty { font-size:0.82rem; color:var(--muted); }
+    .overlay-backdrop { position:fixed; inset:0; background:rgba(20,32,51,0.52); display:none; align-items:center; justify-content:center; z-index:120; padding:16px; }
+    .overlay-backdrop.open { display:flex; }
+    .overlay-dialog { width:min(460px,100%); background:#ffffff; border:1px solid rgba(149,169,200,0.4); border-radius:16px; box-shadow:0 20px 46px rgba(20,32,51,0.34); padding:16px; display:grid; gap:10px; }
+    .overlay-title { margin:0; font-size:1.05rem; }
+    .overlay-note { margin:0; font-size:0.85rem; color:var(--muted); }
+    .overlay-select { width:100%; min-height:180px; border:1px solid var(--line); border-radius:10px; padding:8px; font-size:0.92rem; }
+    .overlay-actions { display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap; }
+    .overlay-btn { padding:8px 12px; border-radius:10px; border:1px solid rgba(149,169,200,0.42); background:#eef5ff; color:#2f67c8; font-weight:700; cursor:pointer; }
+    .overlay-btn.danger { background:#fff1f1; color:#ba3f45; border-color:rgba(216,90,90,0.35); }
+    .overlay-btn.neutral { background:#f4f6fb; color:#4e5874; }
     @media (max-width: 980px) {
       .logic-layout { grid-template-columns:1fr; }
     }
@@ -1393,6 +1392,16 @@ String buildLogicPage() {
   <section class="panel">
     <div class="command-bar">
       <div class="command-group">
+        <button id="loadScriptBtn" class="toolbar-btn save momentary" onclick="openLoadScriptPopup()" title="Gespeichertes Script laden">
+          <span class="toolbar-text">Laden</span>
+          <span class="toolbar-icon-wrap">
+            <svg class="toolbar-icon-svg" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 5v10"/>
+              <path d="M8.5 11.5 12 15l3.5-3.5"/>
+              <path d="M6 18h12"/>
+            </svg>
+          </span>
+        </button>
         <button id="saveScriptBtn" class="toolbar-btn save momentary" onclick="saveScript()" title="Speichern ohne Starten">
           <span class="toolbar-text">Speichern</span>
           <span class="toolbar-icon-wrap">
@@ -1472,14 +1481,6 @@ String buildLogicPage() {
         <div class="tool-item tool-wait" draggable="true" data-tool="wait">Warten</div>
         <div class="tool-item tool-repeat_start" draggable="true" data-tool="repeat">Repeat</div>
         <div class="tool-item tool-all_off" draggable="true" data-tool="all_off">Alles aus</div>
-        <div class="script-library">
-          <div class="script-lib-title">Script-Bibliothek</div>
-          <div class="script-lib-save-row">
-            <input type="text" id="scriptNameInput" placeholder="Name..." maxlength="32">
-            <button type="button" class="script-lib-btn" onclick="saveScriptToLib()">Speichern</button>
-          </div>
-          <div id="scriptLibList" class="script-lib-list"><div class="script-lib-empty">Lade...</div></div>
-        </div>
       </aside>
 
       <section class="script-canvas" id="scriptCanvas">
@@ -1488,6 +1489,19 @@ String buildLogicPage() {
     </div>
   </section>
 </main>
+
+<div id="loadScriptOverlay" class="overlay-backdrop" aria-hidden="true">
+  <div class="overlay-dialog" role="dialog" aria-modal="true" aria-labelledby="loadScriptOverlayTitle">
+    <h3 id="loadScriptOverlayTitle" class="overlay-title">Script laden</h3>
+    <p id="loadScriptOverlayHint" class="overlay-note">Wähle ein gespeichertes Script.</p>
+    <select id="loadScriptSelect" class="overlay-select" size="8"></select>
+    <div class="overlay-actions">
+      <button type="button" class="overlay-btn" onclick="loadSelectedScriptFromOverlay()">Laden</button>
+      <button type="button" class="overlay-btn danger" onclick="deleteSelectedScriptFromOverlay()">Löschen</button>
+      <button type="button" class="overlay-btn neutral" onclick="closeLoadScriptPopup()">Schließen</button>
+    </div>
+  </div>
+</div>
 
 <script>
   const MAX_LEDS = )HTML";
@@ -1503,6 +1517,7 @@ String buildLogicPage() {
   let ledPreviewTimeoutId = 0;
   let ledPreviewRunId = 0;
   let ledSimulatorRunning = false;
+  let loadOverlayScriptNames = [];
 
   function syncToolbarStates() {
     const startButton = document.getElementById('startScriptBtn');
@@ -1750,15 +1765,19 @@ String buildLogicPage() {
     document.querySelectorAll('.mini-wheel-control').forEach(initColorWheel);
   }
 
+  function defaultLedsCsv() {
+    return Array.from({ length: MAX_LEDS }, (_, i) => String(i)).join(',');
+  }
+
   function defaultValuesForType(type) {
     if (type === 'set_color') {
-      return { leds: '0', color: '#FF0000', br: '100' };
+      return { leds: defaultLedsCsv(), color: '#FF0000', br: '100' };
     }
     if (type === 'set_brightness') {
-      return { leds: '0', br: '100' };
+      return { leds: defaultLedsCsv(), br: '100' };
     }
     if (type === 'fade') {
-      return { leds: '0', from: '#FF0000', to: '#0000FF', br: '100', s: '1.0' };
+      return { leds: defaultLedsCsv(), from: '#FF0000', to: '#0000FF', br: '100', s: '1.0' };
     }
     if (type === 'wait') {
       return { s: '1.0' };
@@ -1826,14 +1845,24 @@ String buildLogicPage() {
       const field = el.querySelector(`[data-k="${name}"]`);
       return field ? field.value : null;
     };
+    // Multi-select: .value only returns the first selected option.
+    // Use selectedOptions to capture the full selection.
+    const getLedsCsv = () => {
+      const field = el.querySelector('[data-k="leds"]');
+      if (!field) {
+        return '0';
+      }
+      const selected = Array.from(field.selectedOptions).map(opt => opt.value);
+      return selected.length > 0 ? selected.join(',') : (field.value || '0');
+    };
     if (type === 'set_color') {
-      return { leds: get('leds'), color: get('color'), br: get('br') };
+      return { leds: getLedsCsv(), color: get('color'), br: get('br') };
     }
     if (type === 'set_brightness') {
-      return { leds: get('leds'), br: get('br') };
+      return { leds: getLedsCsv(), br: get('br') };
     }
     if (type === 'fade') {
-      return { leds: get('leds'), from: get('from'), to: get('to'), br: get('br'), s: get('s') };
+      return { leds: getLedsCsv(), from: get('from'), to: get('to'), br: get('br'), s: get('s') };
     }
     if (type === 'wait') {
       return { s: get('s') };
@@ -2241,6 +2270,10 @@ String buildLogicPage() {
   }
 
   function renderList() {
+    // Preserve any in-flight DOM changes (e.g. LED multi-select, color wheel) before
+    // clearing and rebuilding the list.  Safe even when steps is empty: readBlockValues
+    // falls back to the stored step.values when the element doesn't exist yet.
+    syncStepsFromDom();
     const list = document.getElementById('scriptList');
     list.innerHTML = '';
 
@@ -2318,6 +2351,7 @@ String buildLogicPage() {
     const loopCheckbox = document.getElementById('scriptLoopChk');
     if (loopCheckbox) {
       loopCheckbox.addEventListener('change', event => {
+        syncStepsFromDom();
         scriptLoopEnabled = event.target.checked;
         renderList();
       });
@@ -2405,6 +2439,17 @@ String buildLogicPage() {
       .catch(() => setStatus('Verbindungsfehler.', false));
   }
 
+  function fetchScriptNames() {
+    return fetch('/scripts/list')
+      .then(response => {
+        if (!response.ok) {
+          throw new Error('scripts/list failed');
+        }
+        return response.json();
+      })
+      .then(data => Array.isArray(data.scripts) ? data.scripts : []);
+  }
+
   function saveScript() {
     const payload = buildPayload();
     if (payload.error) {
@@ -2415,18 +2460,127 @@ String buildLogicPage() {
       setStatus('Keine Schritte definiert.', false);
       return;
     }
-    fetch('/script/save', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) })
-      .then(response => {
-        if (response.ok) {
-          setStatus('Script gespeichert.', false);
-          if (ledSimulatorRunning) {
-            startLedPreviewPlayback();
-          }
+
+    fetchScriptNames()
+      .then(scriptNames => {
+        const existingHint = scriptNames.length > 0 ? ('\nVorhanden: ' + scriptNames.join(', ')) : '';
+        const rawName = prompt('Script-Name eingeben:' + existingHint, 'Script 1');
+        if (rawName === null) {
           return;
         }
-        response.text().then(text => setStatus('Fehler: ' + text, false));
+        const name = rawName.trim();
+        if (!name) {
+          setStatus('Bitte einen gültigen Script-Namen eingeben.', false);
+          return;
+        }
+
+        const lowerName = name.toLowerCase();
+        const exists = scriptNames.some(entry => String(entry).toLowerCase() === lowerName);
+        if (exists && !confirm('Script "' + name + '" existiert bereits. Überschreiben?')) {
+          return;
+        }
+
+        fetch('/scripts/slot/save?name=' + encodeURIComponent(name), {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(payload)
+        })
+          .then(response => {
+            if (response.ok) {
+              setStatus('Script "' + name + '" gespeichert.', false);
+              if (ledSimulatorRunning) {
+                startLedPreviewPlayback();
+              }
+              return;
+            }
+            response.text().then(text => setStatus('Fehler: ' + text, false));
+          })
+          .catch(() => setStatus('Verbindungsfehler.', false));
       })
-      .catch(() => setStatus('Verbindungsfehler.', false));
+      .catch(() => setStatus('Script-Liste konnte nicht geladen werden.', false));
+  }
+
+  function openLoadScriptPopup() {
+    fetchScriptNames()
+      .then(scriptNames => {
+        loadOverlayScriptNames = scriptNames;
+        const overlay = document.getElementById('loadScriptOverlay');
+        const hint = document.getElementById('loadScriptOverlayHint');
+        const select = document.getElementById('loadScriptSelect');
+        if (!overlay || !hint || !select) {
+          setStatus('Overlay konnte nicht geöffnet werden.', false);
+          return;
+        }
+
+        select.innerHTML = '';
+        scriptNames.forEach(name => {
+          const option = document.createElement('option');
+          option.value = String(name);
+          option.textContent = String(name);
+          select.appendChild(option);
+        });
+
+        if (scriptNames.length === 0) {
+          hint.textContent = 'Keine gespeicherten Scripts gefunden.';
+        } else {
+          hint.textContent = 'Wähle ein gespeichertes Script. Doppelklick lädt sofort.';
+          select.selectedIndex = 0;
+        }
+
+        overlay.classList.add('open');
+        overlay.setAttribute('aria-hidden', 'false');
+        select.focus();
+      })
+      .catch(() => setStatus('Script-Liste konnte nicht geladen werden.', false));
+  }
+
+  function closeLoadScriptPopup() {
+    const overlay = document.getElementById('loadScriptOverlay');
+    if (!overlay) {
+      return;
+    }
+    overlay.classList.remove('open');
+    overlay.setAttribute('aria-hidden', 'true');
+  }
+
+  function getSelectedOverlayScriptName() {
+    const select = document.getElementById('loadScriptSelect');
+    if (!select) {
+      return '';
+    }
+    const selected = select.value ? String(select.value).trim() : '';
+    return selected;
+  }
+
+  function loadSelectedScriptFromOverlay() {
+    const name = getSelectedOverlayScriptName();
+    if (!name) {
+      setStatus('Bitte ein Script auswählen.', false);
+      return;
+    }
+    closeLoadScriptPopup();
+    loadScriptFromLib(name);
+  }
+
+  function deleteSelectedScriptFromOverlay() {
+    const name = getSelectedOverlayScriptName();
+    if (!name) {
+      setStatus('Bitte ein Script auswählen.', false);
+      return;
+    }
+    if (!confirm('Script "' + name + '" wirklich löschen?')) {
+      return;
+    }
+
+    fetch('/scripts/slot/delete?name=' + encodeURIComponent(name), { method: 'POST' })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error('delete failed');
+        }
+        setStatus('Script "' + name + '" gelöscht.', false);
+        openLoadScriptPopup();
+      })
+      .catch(() => setStatus('Löschen fehlgeschlagen.', false));
   }
 
   function stopScript() {
@@ -2477,10 +2631,26 @@ String buildLogicPage() {
     }
     closeAllColorWheels();
   });
-  function escapeHtml(text) {
-    return String(text).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  const overlay = document.getElementById('loadScriptOverlay');
+  if (overlay) {
+    overlay.addEventListener('click', event => {
+      if (event.target === overlay) {
+        closeLoadScriptPopup();
+      }
+    });
   }
-
+  const overlaySelect = document.getElementById('loadScriptSelect');
+  if (overlaySelect) {
+    overlaySelect.addEventListener('dblclick', () => {
+      loadSelectedScriptFromOverlay();
+    });
+  }
+  document.addEventListener('keydown', event => {
+    const activeOverlay = document.getElementById('loadScriptOverlay');
+    if (event.key === 'Escape' && activeOverlay && activeOverlay.classList.contains('open')) {
+      closeLoadScriptPopup();
+    }
+  });
   function stepsFromOps(ops) {
     const result = [];
     for (let i = 0; i < ops.length; i++) {
@@ -2501,51 +2671,6 @@ String buildLogicPage() {
     return result;
   }
 
-  function loadScriptLibrary() {
-    fetch('/scripts/list')
-      .then(r => r.json())
-      .then(data => {
-        const listEl = document.getElementById('scriptLibList');
-        if (!data.scripts || data.scripts.length === 0) {
-          listEl.innerHTML = '<div class="script-lib-empty">Keine Scripts gespeichert.</div>';
-          return;
-        }
-        listEl.innerHTML = data.scripts.map(name =>
-          '<div class="script-lib-item">' +
-          '<span class="script-lib-name" title="' + escapeHtml(name) + '">' + escapeHtml(name) + '</span>' +
-          '<button class="script-lib-btn" onclick="loadScriptFromLib(' + JSON.stringify(name) + ')">Laden</button>' +
-          '<button class="script-lib-btn del" onclick="deleteScriptFromLib(' + JSON.stringify(name) + ')">&#10005;</button>' +
-          '</div>'
-        ).join('');
-      })
-      .catch(() => {
-        const listEl = document.getElementById('scriptLibList');
-        if (listEl) listEl.innerHTML = '<div class="script-lib-empty">Fehler beim Laden.</div>';
-      });
-  }
-
-  function saveScriptToLib() {
-    const nameInput = document.getElementById('scriptNameInput');
-    const name = nameInput ? nameInput.value.trim() : '';
-    if (!name) { setStatus('Bitte einen Namen für das Script eingeben.', false); return; }
-    const payload = buildPayload();
-    if (payload.error) { setStatus(payload.error, false); return; }
-    if (!payload.ops || payload.ops.length === 0) { setStatus('Keine Schritte definiert.', false); return; }
-    fetch('/scripts/slot/save?name=' + encodeURIComponent(name), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    }).then(r => {
-      if (r.ok) {
-        setStatus('Script "' + name + '" in Bibliothek gespeichert.', false);
-        if (nameInput) nameInput.value = '';
-        loadScriptLibrary();
-      } else {
-        r.text().then(t => setStatus('Fehler: ' + t, false));
-      }
-    }).catch(() => setStatus('Verbindungsfehler.', false));
-  }
-
   function loadScriptFromLib(name) {
     fetch('/scripts/slot/load?name=' + encodeURIComponent(name))
       .then(r => { if (!r.ok) throw new Error(); return r.json(); })
@@ -2560,22 +2685,10 @@ String buildLogicPage() {
       .catch(() => setStatus('Laden fehlgeschlagen.', false));
   }
 
-  function deleteScriptFromLib(name) {
-    fetch('/scripts/slot/delete?name=' + encodeURIComponent(name), { method: 'POST' })
-      .then(r => {
-        if (r.ok) {
-          setStatus('Script "' + name + '" gelöscht.', false);
-          loadScriptLibrary();
-        }
-      })
-      .catch(() => {});
-  }
-
   syncLedCountSelect();
   syncToolbarStates();
   setupToolboxDnD();
   renderList();
-  loadScriptLibrary();
 </script>
 </body>
 </html>)HTML";
@@ -3403,6 +3516,9 @@ void loop() {
   }
   webServer.handleClient();
   maintainWifiState();
+
+  // Advance script interpreter every loop tick.
+  tickScript();
 
   if (ledPreviewActive && now - lastLedPreviewMs > kLedPreviewTimeoutMs) {
     ledPreviewActive = false;

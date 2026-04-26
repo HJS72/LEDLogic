@@ -25,6 +25,8 @@ Der Fokus liegt auf einer einfachen visuellen Programmierung von LED-Abläufen d
 
 ## Web-UI
 
+![LEDLogic Web Interface](images/screenshot.png)
+
 - Obere Aktionsleiste mit:
 	- Speichern
 	- Start

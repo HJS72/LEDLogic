@@ -1516,7 +1516,7 @@ String buildLogicPage() {
         <div class="tool-item tool-set_brightness" draggable="true" data-tool="set_brightness">Helligkeit setzen</div>
         <div class="tool-item tool-fade" draggable="true" data-tool="fade">Überblenden</div>
         <div class="tool-item tool-wait" draggable="true" data-tool="wait">Warten</div>
-        <div class="tool-item tool-repeat_start" draggable="true" data-tool="repeat">Repeat</div>
+        <div class="tool-item tool-repeat_start" draggable="true" data-tool="repeat">Wiederholen</div>
         <div class="tool-item tool-all_off" draggable="true" data-tool="all_off">Ausschalten</div>
       </aside>
 
@@ -2435,9 +2435,9 @@ String buildLogicPage() {
       } else if (step.type === 'wait') {
         inner = `<span class="block-label">Warten</span><div class="field-inline"><label>Dauer</label><div class="number-wrap"><input type="number" data-k="s" value="${values.s}" min="0" max="30" step="0.5" style="width:68px"><span>s</span></div></div>`;
       } else if (step.type === 'repeat_start') {
-        inner = `<span class="block-label">Repeat</span><div class="field-inline"><label>Wiederhole</label><div class="number-wrap"><input type="number" data-k="count" value="${values.count}" min="1" max="16" step="1" style="width:68px"><span>mal</span></div></div><span class="inline-note">ab hier bis Repeat Ende</span>`;
+        inner = `<span class="block-label">Wiederholen</span><div class="field-inline"><label>Wiederhole</label><div class="number-wrap"><input type="number" data-k="count" value="${values.count}" min="1" max="16" step="1" style="width:68px"><span>mal</span></div></div><span class="inline-note">ab hier bis Wiederholen Ende</span>`;
       } else if (step.type === 'repeat_end') {
-        inner = `<span class="block-label">Repeat Stop</span><span class="inline-note">Ende Wiederhol-Block</span>`;
+        inner = `<span class="block-label">Wiederholen Ende</span><span class="inline-note">Ende Wiederhol-Block</span>`;
       } else if (step.type === 'all_off') {
         inner = `<span class="block-label">Ausschalten</span><div class="field-inline"><label>LEDs</label><div class="led-checklist">${ledCheckboxes(selectedLeds)}</div></div>`;
       }

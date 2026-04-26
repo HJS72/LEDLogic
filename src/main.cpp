@@ -10,6 +10,7 @@
 #include "build_version_override.h"
 #include "assets/icons/led_icon_75x75_png.h"
 #include "assets/icons/favicon_ico.h"
+#include "assets/icons/save_script_16_png.h"
 
 namespace {
 constexpr char kAccessPointSsid[] = "ESP32-Config";
@@ -25,6 +26,7 @@ constexpr uint8_t kLedDefaultsVersion = 3;
 constexpr char kRedirectLocation[] = "http://192.168.4.1/config";
 constexpr char kLedLogicIconUrl[] = "/assets/icons/led_icon_75x75.png";
 constexpr char kLedLogicFaviconUrl[] = "/favicon.ico";
+constexpr char kSetupSaveIconUrl[] = "/assets/icons/save_script_16.png";
 constexpr char kDefaultOtaCheckUrl[] = "https://raw.githubusercontent.com/HJS72/LEDLogic/main/ota/latest.json";
 constexpr char kDefaultOtaBinUrl[] = "https://raw.githubusercontent.com/HJS72/LEDLogic/main/firmware/firmware.bin";
 constexpr uint8_t kLedPin = 5;
@@ -1261,7 +1263,7 @@ String buildLogicPage() {
   <style>
     :root { --bg:#f3eeff; --panel:#ffffff; --line:#ddd0f0; --text:#1a1030; --accent:#9b3db8; --muted:#6d5a84; }
     body { margin:0; font-family:"Avenir Next","Segoe UI",sans-serif; background:linear-gradient(140deg,#e8f0ff,#f5e6ff); color:var(--text); padding:18px; }
-    .wrap { margin:0 auto; display:grid; gap:16px; }
+    .wrap { margin:0 auto; display:grid; gap:6px; }
     .panel { background:var(--panel); border:1px solid var(--line); border-radius:20px; padding:20px; }
     h1,h2,h3 { margin-top:0; }
     .topbar { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:4px; }
@@ -1323,13 +1325,15 @@ String buildLogicPage() {
     .led-sim-list { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
     .led-sim-dot { width:20px; height:20px; border-radius:50%; background:#d9e1ee; border:1px solid rgba(20,32,51,0.18); box-shadow:inset 0 1px 2px rgba(255,255,255,0.95); opacity:0.45; transition:background 120ms linear, box-shadow 120ms linear, opacity 120ms linear, transform 120ms linear; }
     .led-sim-dot.active { opacity:1; transform:scale(1.04); }
-    .logic-layout { display:grid; grid-template-columns:260px minmax(0,1fr); gap:14px; margin-top:12px; }
-    .toolbox { border:1px solid var(--line); border-radius:14px; background:#f8fbff; padding:10px; display:grid; gap:8px; align-content:start; }
-    .toolbox-setup { display:grid; gap:8px; padding:10px; border:1px solid rgba(149,169,200,0.24); border-radius:12px; background:linear-gradient(180deg,rgba(255,255,255,0.96),rgba(242,247,253,0.92)); }
+    .logic-layout { display:grid; grid-template-columns:220px minmax(0,1fr); gap:14px; margin-top:12px; }
+    .toolbox { border:1px solid var(--line); border-radius:14px; width:fit-content; max-width:100%; justify-self:start; background:#f8fbff; padding:8px; display:grid; gap:8px; align-content:start; }
+    .toolbox-setup { display:grid; gap:8px; width:fit-content; max-width:100%; justify-self:start; padding:8px; border:1px solid rgba(149,169,200,0.24); border-radius:12px; background:linear-gradient(180deg,rgba(255,255,255,0.96),rgba(242,247,253,0.92)); }
     .toolbox-setup-title { font-size:0.74rem; font-weight:700; letter-spacing:0.03em; text-transform:uppercase; color:var(--muted); }
     .toolbox-setup-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
-    .toolbox-setup select { min-width:88px; }
+      .toolbox-setup select { width:48px; min-width:48px; }
     .toolbox-setup button { padding:8px 12px; border-radius:10px; }
+      .setup-save-icon { width:36px; height:36px; padding:0 !important; display:flex; align-items:center; justify-content:center; line-height:0; }
+      .setup-save-icon img { width:24px; height:24px; display:block; object-fit:contain; }
     .toolbox h3 { margin:0 0 4px; font-size:1rem; }
     .tool-item { border:1px solid rgba(20,32,51,0.12); border-left-width:6px; border-radius:10px; padding:10px 10px; font-weight:700; cursor:grab; user-select:none; }
     .tool-item:active { cursor:grabbing; }
@@ -1356,6 +1360,9 @@ String buildLogicPage() {
     .field-stack { display:grid; gap:0; }
     .field-inline { display:flex; align-items:center; gap:6px; }
     .field-inline label { margin:0; white-space:nowrap; }
+    .led-checklist { display:flex; align-items:center; flex-wrap:wrap; gap:6px; }
+    .led-check { display:inline-flex; align-items:center; gap:4px; font-size:0.82rem; color:var(--text); padding:2px 6px; border:1px solid rgba(20,32,51,0.16); border-radius:999px; background:#ffffff; }
+    .led-check input { margin:0; }
     .number-wrap { display:flex; align-items:center; gap:6px; }
     .block-actions { margin-left:auto; display:flex; align-items:center; gap:4px; }
     .block-mini-btn { width:28px; height:28px; display:inline-flex; align-items:center; justify-content:center; border:1px solid rgba(20,32,51,0.18); border-radius:7px; background:#f4f7fc; color:#405070; padding:0; cursor:pointer; }
@@ -1366,9 +1373,9 @@ String buildLogicPage() {
     .block-repeat_end .block-mini-btn.copy { background:#f4efff; color:#6d4dc1; border-color:rgba(109,77,193,0.28); }
     .block-all_off .block-mini-btn.copy { background:#fff1f1; color:#d85a5a; border-color:rgba(216,90,90,0.3); }
     .block-mini-btn.remove { background:#fff1f1; color:#c0392b; border-color:rgba(192,57,43,0.24); }
-    .status-bar { font-size:0.88rem; color:var(--muted); padding:6px 0; }
-    .status-bar.running { color:var(--accent); font-weight:700; }
-    .command-bar .status-bar { display:flex; align-items:center; min-height:44px; padding:0 10px; margin-left:auto; border-radius:12px; background:rgba(255,255,255,0.68); border:1px solid rgba(149,169,200,0.28); }
+    .status-bar { font-size:0.9rem; color:#000000; font-weight:400; padding:0; }
+    .status-bar.running { color:#000000; font-weight:400; }
+    .footer-debug-box { border:1px solid rgba(149,169,200,0.34); border-radius:14px; background:linear-gradient(180deg,rgba(255,255,255,0.95),rgba(242,247,253,0.92)); padding:10px 12px; }
     .inline-note { font-size:0.8rem; color:var(--muted); align-self:center; }
     .mini-wheel-control { position:relative; display:flex; align-items:center; gap:6px; }
     .color-chip-btn { width:26px; height:26px; border-radius:7px; border:1px solid rgba(20,32,51,0.25); cursor:pointer; }
@@ -1477,7 +1484,6 @@ String buildLogicPage() {
           <div class="led-sim-list" id="ledSimList"></div>
         </div>
       </div>
-      <div class="status-bar" id="statusBar">Bereit.</div>
     </div>
 
     <div class="logic-layout">
@@ -1500,7 +1506,9 @@ String buildLogicPage() {
               <option value="11">11</option>
               <option value="12">12</option>
             </select>
-            <button type="button" class="secondary" onclick="saveLedCount()">Übernehmen</button>
+            <button type="button" class="secondary setup-save-icon" onclick="saveLedCount()" title="Übernehmen" aria-label="Übernehmen"><img src=")HTML";
+  page += kSetupSaveIconUrl;
+  page += R"HTML(" alt="Speichern"></button>
           </div>
         </div>
         <h3>Werkzeugleiste</h3>
@@ -1516,6 +1524,10 @@ String buildLogicPage() {
         <div class="script-list" id="scriptList"></div>
       </section>
     </div>
+  </section>
+
+  <section class="panel footer-debug-box">
+    <div class="status-bar" id="statusBar">Bereit.</div>
   </section>
 </main>
 
@@ -1842,23 +1854,20 @@ String buildLogicPage() {
   }
 
   function readSelectedLeds(el) {
-    const field = el.querySelector('[data-k="leds"]');
-    if (!field) {
-      return [0];
-    }
-    const selected = Array.from(field.selectedOptions).map(option => Number.parseInt(option.value, 10));
+    const selected = Array.from(el.querySelectorAll('input[type="checkbox"][data-k="leds"]:checked'))
+      .map(input => Number.parseInt(input.value, 10));
     const valid = selected.filter(index => Number.isInteger(index) && index >= 0 && index < MAX_LEDS);
     if (valid.length > 0) {
       return valid;
     }
-    return normalizeLedCsv(field.dataset.fallback || field.value || '0');
+    return [0];
   }
 
-  function ledOptions(selectedCsv) {
+  function ledCheckboxes(selectedCsv) {
     const selectedSet = new Set(normalizeLedCsv(selectedCsv));
     let options = '';
     for (let i = 0; i < MAX_LEDS; i += 1) {
-      options += `<option value="${i}"${selectedSet.has(i) ? ' selected' : ''}>LED ${i + 1}</option>`;
+      options += `<label class="led-check"><input type="checkbox" data-k="leds" value="${i}"${selectedSet.has(i) ? ' checked' : ''}><span>${i + 1}</span></label>`;
     }
     return options;
   }
@@ -1877,15 +1886,10 @@ String buildLogicPage() {
       const field = el.querySelector(`[data-k="${name}"]`);
       return field ? field.value : null;
     };
-    // Multi-select: .value only returns the first selected option.
-    // Use selectedOptions to capture the full selection.
     const getLedsCsv = () => {
-      const field = el.querySelector('[data-k="leds"]');
-      if (!field) {
-        return '0';
-      }
-      const selected = Array.from(field.selectedOptions).map(opt => opt.value);
-      return selected.length > 0 ? selected.join(',') : (field.value || '0');
+      const selected = Array.from(el.querySelectorAll('input[type="checkbox"][data-k="leds"]:checked'))
+        .map(input => input.value);
+      return selected.length > 0 ? selected.join(',') : '0';
     };
     if (type === 'set_color') {
       return { leds: getLedsCsv(), color: get('color'), br: get('br') };
@@ -2423,11 +2427,11 @@ String buildLogicPage() {
 
       let inner = '';
       if (step.type === 'set_color') {
-        inner = `<span class="block-label">Farbe</span><div class="field-inline"><label>LEDs</label><select data-k="leds" data-fallback="${selectedLeds}" multiple size="2" style="min-width:110px;">${ledOptions(selectedLeds)}</select></div><div class="field-inline"><label>Farbe</label>${buildWheelControl('color', values.color, '')}</div><div class="field-inline"><label>Helligkeit</label><div class="number-wrap"><input type="number" data-k="br" value="${values.br}" min="0" max="100" style="width:68px"><span>%</span></div></div>`;
+        inner = `<span class="block-label">Farbe</span><div class="field-inline"><label>LEDs</label><div class="led-checklist">${ledCheckboxes(selectedLeds)}</div></div><div class="field-inline"><label>Farbe</label>${buildWheelControl('color', values.color, '')}</div><div class="field-inline"><label>Helligkeit</label><div class="number-wrap"><input type="number" data-k="br" value="${values.br}" min="0" max="100" style="width:68px"><span>%</span></div></div>`;
       } else if (step.type === 'set_brightness') {
-        inner = `<span class="block-label">Helligkeit</span><div class="field-inline"><label>LEDs</label><select data-k="leds" data-fallback="${selectedLeds}" multiple size="2" style="min-width:110px;">${ledOptions(selectedLeds)}</select></div><div class="field-inline"><label>Wert</label><div class="number-wrap"><input type="number" data-k="br" value="${values.br}" min="0" max="100" style="width:68px"><span>%</span></div></div>`;
+        inner = `<span class="block-label">Helligkeit</span><div class="field-inline"><label>LEDs</label><div class="led-checklist">${ledCheckboxes(selectedLeds)}</div></div><div class="field-inline"><label>Wert</label><div class="number-wrap"><input type="number" data-k="br" value="${values.br}" min="0" max="100" style="width:68px"><span>%</span></div></div>`;
       } else if (step.type === 'fade') {
-        inner = `<span class="block-label">Blend</span><div class="field-inline"><label>LEDs</label><select data-k="leds" data-fallback="${selectedLeds}" multiple size="2" style="min-width:110px;">${ledOptions(selectedLeds)}</select></div><div class="field-inline"><label>Von</label>${buildWheelControl('from', values.from, '')}</div><div class="field-inline"><label>Nach</label>${buildWheelControl('to', values.to, '')}</div><div class="field-inline"><label>Helligkeit</label><div class="number-wrap"><input type="number" data-k="br" value="${values.br}" min="0" max="100" style="width:68px"><span>%</span></div></div><div class="field-inline"><label>Dauer</label><div class="number-wrap"><input type="number" data-k="s" value="${values.s}" min="0" max="30" step="0.5" style="width:68px"><span>s</span></div></div>`;
+        inner = `<span class="block-label">Blend</span><div class="field-inline"><label>LEDs</label><div class="led-checklist">${ledCheckboxes(selectedLeds)}</div></div><div class="field-inline"><label>Von</label>${buildWheelControl('from', values.from, '')}</div><div class="field-inline"><label>Nach</label>${buildWheelControl('to', values.to, '')}</div><div class="field-inline"><label>Helligkeit</label><div class="number-wrap"><input type="number" data-k="br" value="${values.br}" min="0" max="100" style="width:68px"><span>%</span></div></div><div class="field-inline"><label>Dauer</label><div class="number-wrap"><input type="number" data-k="s" value="${values.s}" min="0" max="30" step="0.5" style="width:68px"><span>s</span></div></div>`;
       } else if (step.type === 'wait') {
         inner = `<span class="block-label">Warten</span><div class="field-inline"><label>Dauer</label><div class="number-wrap"><input type="number" data-k="s" value="${values.s}" min="0" max="30" step="0.5" style="width:68px"><span>s</span></div></div>`;
       } else if (step.type === 'repeat_start') {
@@ -2435,7 +2439,7 @@ String buildLogicPage() {
       } else if (step.type === 'repeat_end') {
         inner = `<span class="block-label">Repeat Stop</span><span class="inline-note">Ende Wiederhol-Block</span>`;
       } else if (step.type === 'all_off') {
-        inner = `<span class="block-label">Ausschalten</span><div class="field-inline"><label>LEDs</label><select data-k="leds" data-fallback="${selectedLeds}" multiple size="2" style="min-width:110px;">${ledOptions(selectedLeds)}</select></div>`;
+        inner = `<span class="block-label">Ausschalten</span><div class="field-inline"><label>LEDs</label><div class="led-checklist">${ledCheckboxes(selectedLeds)}</div></div>`;
       }
       inner += `<div class="block-actions"><button class="block-mini-btn copy" onclick="duplicateBlock(${step.id})" title="Kopieren" aria-label="Kopieren"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"></rect><rect x="4" y="4" width="11" height="11" rx="2"></rect></svg></button><button class="block-mini-btn remove" onclick="removeBlock(${step.id})" title="Entfernen" aria-label="Entfernen"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12"></path><path d="M18 6 6 18"></path></svg></button></div>`;
       div.innerHTML = inner;
@@ -3537,6 +3541,11 @@ void handleFaviconIco() {
   webServer.send_P(200, "image/x-icon", reinterpret_cast<const char*>(led_favicon_ico), led_favicon_ico_len);
 }
 
+void handleSetupSaveIconPng() {
+  webServer.sendHeader("Cache-Control", "public, max-age=86400");
+  webServer.send_P(200, "image/png", reinterpret_cast<const char*>(save_script_16_png), save_script_16_png_len);
+}
+
 void handleCaptiveProbe() {
   sendPortalRedirect();
 }
@@ -3555,6 +3564,7 @@ void configureWebServer() {
   webServer.on("/config", HTTP_GET, handleConfig);
   webServer.on(kLedLogicIconUrl, HTTP_GET, handleIconPng);
   webServer.on(kLedLogicFaviconUrl, HTTP_GET, handleFaviconIco);
+  webServer.on(kSetupSaveIconUrl, HTTP_GET, handleSetupSaveIconPng);
   webServer.on("/script/save", HTTP_POST, handleScriptSave);
   webServer.on("/script/run", HTTP_POST, handleScriptRun);
   webServer.on("/script/stop", HTTP_POST, handleScriptStop);

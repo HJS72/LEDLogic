@@ -14,6 +14,7 @@
 namespace {
 constexpr char kAccessPointSsid[] = "ESP32-Config";
 constexpr char kAccessPointPassword[] = "configureme";
+constexpr char kDeviceHostname[] = "150_195_ESP32LEDLogic";
 constexpr byte kDnsPort = 53;
 constexpr unsigned long kStatusLogCapacity = 80;
 constexpr unsigned long kWifiRetryIntervalMs = 15000;
@@ -406,7 +407,7 @@ static uint16_t parseLedMaskFromCsv(const String& csv) {
   return mask;
 }
 
-static uint16_t parseLedMaskFromOp(const String& opJson) {
+static uint16_t parseLedMaskFromOp(const String& opJson, const uint16_t defaultMask) {
   const String ledsCsv = extractJsonStr(opJson, "leds");
   if (!ledsCsv.isEmpty()) {
     const uint16_t csvMask = parseLedMaskFromCsv(ledsCsv);
@@ -416,12 +417,31 @@ static uint16_t parseLedMaskFromOp(const String& opJson) {
   }
 
   // Backward compatibility with older scripts that stored only one LED index.
-  const int led = constrain(extractJsonStr(opJson, "led").toInt(), 0, kLedMaxCount - 1);
-  return static_cast<uint16_t>(1U << led);
+  const String ledField = extractJsonStr(opJson, "led");
+  if (!ledField.isEmpty()) {
+    const int led = constrain(ledField.toInt(), 0, kLedMaxCount - 1);
+    return static_cast<uint16_t>(1U << led);
+  }
+
+  return defaultMask;
+}
+
+static uint16_t allLedMask() {
+  return static_cast<uint16_t>((1UL << kLedMaxCount) - 1U);
 }
 
 static void scriptAllOff() {
   for (uint8_t i = 0; i < kLedMaxCount; ++i) {
+    scriptEnabled[i] = false;
+    scriptR[i] = scriptG[i] = scriptB[i] = scriptBr[i] = 0;
+  }
+}
+
+static void scriptAllOffMask(const uint16_t ledMask) {
+  for (uint8_t i = 0; i < kLedMaxCount; ++i) {
+    if ((ledMask & static_cast<uint16_t>(1U << i)) == 0) {
+      continue;
+    }
     scriptEnabled[i] = false;
     scriptR[i] = scriptG[i] = scriptB[i] = scriptBr[i] = 0;
   }
@@ -455,7 +475,7 @@ bool parseAndRunScript(const String& json) {
 
     if (opType == "set") {
       step.op = ScriptOpType::kSet;
-      step.ledMask = parseLedMaskFromOp(opJson);
+      step.ledMask = parseLedMaskFromOp(opJson, static_cast<uint16_t>(1U));
       parseHexColor(extractJsonStr(opJson, "color"), step.r1, step.g1, step.b1);
       const int br = extractJsonStr(opJson, "br").toInt();
       step.brightness = static_cast<uint8_t>(constrain(br * 255 / 100, 0, 255));
@@ -464,12 +484,12 @@ bool parseAndRunScript(const String& json) {
       step.durationMs = static_cast<uint32_t>(extractJsonStr(opJson, "s").toFloat() * 1000.0f);
     } else if (opType == "brightness") {
       step.op = ScriptOpType::kBrightness;
-      step.ledMask = parseLedMaskFromOp(opJson);
+      step.ledMask = parseLedMaskFromOp(opJson, static_cast<uint16_t>(1U));
       const int br = extractJsonStr(opJson, "br").toInt();
       step.brightness = static_cast<uint8_t>(constrain(br * 255 / 100, 0, 255));
     } else if (opType == "fade") {
       step.op = ScriptOpType::kFade;
-      step.ledMask = parseLedMaskFromOp(opJson);
+      step.ledMask = parseLedMaskFromOp(opJson, static_cast<uint16_t>(1U));
       parseHexColor(extractJsonStr(opJson, "from"), step.r1, step.g1, step.b1);
       parseHexColor(extractJsonStr(opJson, "to"), step.r2, step.g2, step.b2);
       step.durationMs = static_cast<uint32_t>(extractJsonStr(opJson, "s").toFloat() * 1000.0f);
@@ -477,6 +497,7 @@ bool parseAndRunScript(const String& json) {
       step.brightness = static_cast<uint8_t>(constrain(br * 255 / 100, 0, 255));
     } else if (opType == "all_off") {
       step.op = ScriptOpType::kAllOff;
+      step.ledMask = parseLedMaskFromOp(opJson, allLedMask());
     } else {
       valid = false;
     }
@@ -509,7 +530,7 @@ bool parseAndRunScript(const String& json) {
     }
     ws2812Show();
   } else if (first.op == ScriptOpType::kAllOff) {
-    scriptAllOff();
+    scriptAllOffMask(first.ledMask);
     ws2812Show();
   }
 
@@ -571,7 +592,7 @@ void tickScript() {
       break;
 
     case ScriptOpType::kAllOff:
-      scriptAllOff();
+      scriptAllOffMask(step.ledMask);
       ws2812Show();
       advance = true;
       break;
@@ -1336,7 +1357,15 @@ String buildLogicPage() {
     .field-inline { display:flex; align-items:center; gap:6px; }
     .field-inline label { margin:0; white-space:nowrap; }
     .number-wrap { display:flex; align-items:center; gap:6px; }
-    .block-remove { margin-left:auto; background:none; border:none; color:#c0392b; font-size:1.1rem; cursor:pointer; padding:0 4px; }
+    .block-actions { margin-left:auto; display:flex; align-items:center; gap:4px; }
+    .block-mini-btn { width:28px; height:28px; display:inline-flex; align-items:center; justify-content:center; border:1px solid rgba(20,32,51,0.18); border-radius:7px; background:#f4f7fc; color:#405070; padding:0; cursor:pointer; }
+    .block-mini-btn svg { width:14px; height:14px; fill:none; stroke:currentColor; stroke-width:1.9; stroke-linecap:round; stroke-linejoin:round; }
+    .block-mini-btn.copy { background:#edf6ff; color:#2f67c8; border-color:rgba(47,103,200,0.25); }
+    .block-wait .block-mini-btn.copy { background:#fff7eb; color:#c4892b; border-color:rgba(196,137,43,0.3); }
+    .block-repeat_start .block-mini-btn.copy,
+    .block-repeat_end .block-mini-btn.copy { background:#f4efff; color:#6d4dc1; border-color:rgba(109,77,193,0.28); }
+    .block-all_off .block-mini-btn.copy { background:#fff1f1; color:#d85a5a; border-color:rgba(216,90,90,0.3); }
+    .block-mini-btn.remove { background:#fff1f1; color:#c0392b; border-color:rgba(192,57,43,0.24); }
     .status-bar { font-size:0.88rem; color:var(--muted); padding:6px 0; }
     .status-bar.running { color:var(--accent); font-weight:700; }
     .command-bar .status-bar { display:flex; align-items:center; min-height:44px; padding:0 10px; margin-left:auto; border-radius:12px; background:rgba(255,255,255,0.68); border:1px solid rgba(149,169,200,0.28); }
@@ -1480,7 +1509,7 @@ String buildLogicPage() {
         <div class="tool-item tool-fade" draggable="true" data-tool="fade">Überblenden</div>
         <div class="tool-item tool-wait" draggable="true" data-tool="wait">Warten</div>
         <div class="tool-item tool-repeat_start" draggable="true" data-tool="repeat">Repeat</div>
-        <div class="tool-item tool-all_off" draggable="true" data-tool="all_off">Alles aus</div>
+        <div class="tool-item tool-all_off" draggable="true" data-tool="all_off">Ausschalten</div>
       </aside>
 
       <section class="script-canvas" id="scriptCanvas">
@@ -1785,6 +1814,9 @@ String buildLogicPage() {
     if (type === 'repeat_start') {
       return { count: '2' };
     }
+    if (type === 'all_off') {
+      return { leds: defaultLedsCsv() };
+    }
     return {};
   }
 
@@ -1870,6 +1902,9 @@ String buildLogicPage() {
     if (type === 'repeat_start') {
       return { count: get('count') };
     }
+    if (type === 'all_off') {
+      return { leds: getLedsCsv() };
+    }
     return {};
   }
 
@@ -1882,7 +1917,65 @@ String buildLogicPage() {
 
   function removeBlock(id) {
     syncStepsFromDom();
-    steps = steps.filter(step => step.id !== id);
+
+    const index = steps.findIndex(step => step.id === id);
+    if (index < 0) {
+      renderList();
+      return;
+    }
+
+    const step = steps[index];
+    const idsToDelete = new Set([id]);
+
+    if (step.type === 'repeat_start') {
+      let depth = 1;
+      for (let i = index + 1; i < steps.length; i += 1) {
+        if (steps[i].type === 'repeat_start') {
+          depth += 1;
+        } else if (steps[i].type === 'repeat_end') {
+          depth -= 1;
+          if (depth === 0) {
+            idsToDelete.add(steps[i].id);
+            break;
+          }
+        }
+      }
+    } else if (step.type === 'repeat_end') {
+      let depth = 1;
+      for (let i = index - 1; i >= 0; i -= 1) {
+        if (steps[i].type === 'repeat_end') {
+          depth += 1;
+        } else if (steps[i].type === 'repeat_start') {
+          depth -= 1;
+          if (depth === 0) {
+            idsToDelete.add(steps[i].id);
+            break;
+          }
+        }
+      }
+    }
+
+    steps = steps.filter(entry => !idsToDelete.has(entry.id));
+    renderList();
+  }
+
+  function duplicateBlock(id) {
+    syncStepsFromDom();
+
+    const index = steps.findIndex(step => step.id === id);
+    if (index < 0) {
+      return;
+    }
+
+    const source = steps[index];
+    const copiedValues = JSON.parse(JSON.stringify(source.values || defaultValuesForType(source.type)));
+    const clone = {
+      id: Date.now() + Math.floor(Math.random() * 1000),
+      type: source.type,
+      values: copiedValues
+    };
+
+    steps.splice(index + 1, 0, clone);
     renderList();
   }
 
@@ -1921,6 +2014,10 @@ String buildLogicPage() {
       step.count = parseInt(values.count, 10);
     } else if (type === 'repeat_end') {
       step.op = 'repeat_end';
+    } else if (type === 'all_off') {
+      step.op = 'all_off';
+      step.led = selectedLeds[0];
+      step.leds = ledsCsv;
     }
     return step;
   }
@@ -1950,21 +2047,20 @@ String buildLogicPage() {
     const dots = ensureLedSimulatorDots();
     dots.forEach((dot, index) => {
       const led = state[index] || { enabled: false, r: 0, g: 0, b: 0, br: 0 };
-      if (!led.enabled || led.br <= 0) {
+      if (!led.enabled) {
         dot.classList.remove('active');
         dot.style.background = '#d9e1ee';
         dot.style.boxShadow = 'inset 0 1px 2px rgba(255,255,255,0.95)';
         dot.style.opacity = '0.45';
         return;
       }
-      const factor = Math.max(0, Math.min(led.br, 100)) / 100;
-      const rr = Math.round(led.r * factor);
-      const gg = Math.round(led.g * factor);
-      const bb = Math.round(led.b * factor);
+      const rr = Math.max(0, Math.min(255, Math.round(led.r)));
+      const gg = Math.max(0, Math.min(255, Math.round(led.g)));
+      const bb = Math.max(0, Math.min(255, Math.round(led.b)));
       dot.classList.add('active');
       dot.style.background = `rgb(${rr}, ${gg}, ${bb})`;
       dot.style.boxShadow = `0 0 0 1px rgba(20,32,51,0.14), 0 0 14px rgba(${rr}, ${gg}, ${bb}, 0.48)`;
-      dot.style.opacity = String(0.35 + factor * 0.65);
+      dot.style.opacity = '1';
     });
   }
 
@@ -2073,9 +2169,12 @@ String buildLogicPage() {
       }
 
       if (step.op === 'all_off') {
-        for (let i = 0; i < state.length; i += 1) {
-          state[i] = { enabled: false, r: 0, g: 0, b: 0, br: 0 };
-        }
+        const offTargets = step.leds
+          ? normalizeLedCsv(step.leds)
+          : (Number.isInteger(step.led) ? [step.led] : Array.from({ length: MAX_LEDS }, (_, i) => i));
+        offTargets.forEach(ledIndex => {
+          state[ledIndex] = { enabled: false, r: 0, g: 0, b: 0, br: 0 };
+        });
         applyLedPreviewState(state);
         scheduleLedPreviewNext(() => runStep(stepIndex + 1), 0);
         return;
@@ -2336,9 +2435,9 @@ String buildLogicPage() {
       } else if (step.type === 'repeat_end') {
         inner = `<span class="block-label">Repeat Stop</span><span class="inline-note">Ende Wiederhol-Block</span>`;
       } else if (step.type === 'all_off') {
-        inner = `<span class="block-label">Alles aus</span>`;
+        inner = `<span class="block-label">Ausschalten</span><div class="field-inline"><label>LEDs</label><select data-k="leds" data-fallback="${selectedLeds}" multiple size="2" style="min-width:110px;">${ledOptions(selectedLeds)}</select></div>`;
       }
-      inner += `<button class="block-remove" onclick="removeBlock(${step.id})" title="Entfernen">&#10005;</button>`;
+      inner += `<div class="block-actions"><button class="block-mini-btn copy" onclick="duplicateBlock(${step.id})" title="Kopieren" aria-label="Kopieren"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"></rect><rect x="4" y="4" width="11" height="11" rx="2"></rect></svg></button><button class="block-mini-btn remove" onclick="removeBlock(${step.id})" title="Entfernen" aria-label="Entfernen"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12"></path><path d="M18 6 6 18"></path></svg></button></div>`;
       div.innerHTML = inner;
       list.appendChild(div);
     });
@@ -2665,7 +2764,7 @@ String buildLogicPage() {
       } else if (op.op === 'wait') {
         result.push({ id, type: 'wait', values: { s: String(op.s != null ? op.s : 1) } });
       } else if (op.op === 'all_off') {
-        result.push({ id, type: 'all_off', values: {} });
+        result.push({ id, type: 'all_off', values: { leds: op.leds || String(op.led != null ? op.led : 0) } });
       }
     }
     return result;
@@ -2679,16 +2778,58 @@ String buildLogicPage() {
         steps = stepsFromOps(data.ops || []);
         scriptLoopEnabled = !!data.loop;
         renderList();
-        setStatus('Script "' + name + '" geladen.', false);
+        const activePayload = { loop: !!data.loop, ops: Array.isArray(data.ops) ? data.ops : [] };
+        fetch('/script/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(activePayload)
+        }).then(response => {
+          if (response.ok) {
+            setStatus('Script "' + name + '" geladen (Autoload nach Neustart aktiv).', false);
+            return;
+          }
+          setStatus('Script "' + name + '" geladen (Autoload konnte nicht gespeichert werden).', false);
+        }).catch(() => {
+          setStatus('Script "' + name + '" geladen (Autoload konnte nicht gespeichert werden).', false);
+        });
         if (ledSimulatorRunning) { startLedPreviewPlayback(); }
       })
       .catch(() => setStatus('Laden fehlgeschlagen.', false));
+  }
+
+  function loadActiveScriptFromDevice() {
+    fetch('/script/current')
+      .then(response => {
+        if (response.status === 204) {
+          return null;
+        }
+        if (!response.ok) {
+          throw new Error('script/current failed');
+        }
+        return response.json();
+      })
+      .then(data => {
+        if (!data || !Array.isArray(data.ops) || data.ops.length === 0) {
+          return;
+        }
+        syncStepsFromDom();
+        steps = stepsFromOps(data.ops);
+        scriptLoopEnabled = !!data.loop;
+        ledSimulatorRunning = true;
+        syncToolbarStates();
+        renderList();
+        setStatus('Aktives Script vom Gerät geladen.', true);
+      })
+      .catch(() => {
+        // Keep the editor usable even if the active script endpoint is unavailable.
+      });
   }
 
   syncLedCountSelect();
   syncToolbarStates();
   setupToolboxDnD();
   renderList();
+  loadActiveScriptFromDevice();
 </script>
 </body>
 </html>)HTML";
@@ -3251,6 +3392,14 @@ void handleScriptClear() {
   webServer.send(204, "text/plain", "");
 }
 
+void handleScriptCurrent() {
+  if (savedScriptJson.isEmpty()) {
+    webServer.send(204, "application/json", "");
+    return;
+  }
+  webServer.send(200, "application/json", savedScriptJson);
+}
+
 void handleOtaCheck() {
   if (!webServer.hasArg("url")) {
     webServer.send(400, "application/json", "{\"error\":\"url fehlt\"}");
@@ -3410,6 +3559,7 @@ void configureWebServer() {
   webServer.on("/script/run", HTTP_POST, handleScriptRun);
   webServer.on("/script/stop", HTTP_POST, handleScriptStop);
   webServer.on("/script/clear", HTTP_POST, handleScriptClear);
+  webServer.on("/script/current", HTTP_GET, handleScriptCurrent);
   webServer.on("/scripts/list", HTTP_GET, handleScriptsList);
   webServer.on("/scripts/slot/save", HTTP_POST, handleScriptSlotSave);
   webServer.on("/scripts/slot/load", HTTP_GET, handleScriptSlotLoad);
@@ -3492,6 +3642,7 @@ void setup() {
   }
 
   WiFi.mode(WIFI_AP_STA);
+  WiFi.setHostname(kDeviceHostname);
   WiFi.onEvent(handleWifiEvent);
   WiFi.setSleep(false);
 

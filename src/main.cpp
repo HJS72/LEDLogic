@@ -1248,18 +1248,16 @@ String buildLedCardsHtml() {
   return html;
 }
 
-String buildLogicPage() {
-  String page;
-  page.reserve(28000);
-  page += R"HTML(<!DOCTYPE html>
+void sendLogicPageStreamed() {
+  webServer.sendContent(R"HTML(<!DOCTYPE html>
 <html lang="de">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>LED-Logic</title>
-  <link rel="icon" type="image/png" href=")HTML";
-  page += kLedLogicFaviconUrl;
-  page += R"HTML(">
+  <link rel="icon" type="image/png" href=")HTML");
+  webServer.sendContent(kLedLogicFaviconUrl);
+  webServer.sendContent(R"HTML(">
   <style>
     :root { --bg:#f3eeff; --panel:#ffffff; --line:#ddd0f0; --text:#1a1030; --accent:#9b3db8; --muted:#6d5a84; }
     body { margin:0; font-family:"Avenir Next","Segoe UI",sans-serif; background:linear-gradient(140deg,#e8f0ff,#f5e6ff); color:var(--text); padding:18px; }
@@ -1415,13 +1413,13 @@ String buildLogicPage() {
     </details>
     <div class="title-row">
       <svg class="title-icon" viewBox="0 0 64 64" aria-hidden="true">
-        <image href=")HTML";
-  page += kLedLogicIconUrl;
-  page += R"HTML(" x="-2" y="-2" width="68" height="68" preserveAspectRatio="xMidYMid slice"/>
-      </svg>
-        <h1 class="title">LED-Logic <span class="title-version">V )HTML";
-  page += firmwareVersion;
-  page += R"HTML(</span></h1>
+          <image href=")HTML");
+        webServer.sendContent(kLedLogicIconUrl);
+        webServer.sendContent(R"HTML(" x="-2" y="-2" width="68" height="68" preserveAspectRatio="xMidYMid slice"/>
+        </svg>
+          <h1 class="title">LED-Logic <span class="title-version">V )HTML");
+        webServer.sendContent(firmwareVersion);
+        webServer.sendContent(R"HTML(</span></h1>
     </div>
   </div>
 
@@ -1506,9 +1504,9 @@ String buildLogicPage() {
               <option value="11">11</option>
               <option value="12">12</option>
             </select>
-            <button type="button" class="secondary setup-save-icon" onclick="saveLedCount()" title="Übernehmen" aria-label="Übernehmen"><img src=")HTML";
-  page += kSetupSaveIconUrl;
-  page += R"HTML(" alt="Speichern"></button>
+            <button type="button" class="secondary setup-save-icon" onclick="saveLedCount()" title="Übernehmen" aria-label="Übernehmen"><img src=")HTML");
+  webServer.sendContent(kSetupSaveIconUrl);
+  webServer.sendContent(R"HTML(" alt="Speichern"></button>
           </div>
         </div>
         <h3>Werkzeugleiste</h3>
@@ -1545,9 +1543,9 @@ String buildLogicPage() {
 </div>
 
 <script>
-  const MAX_LEDS = )HTML";
-  page += String(ledCount);
-  page += R"HTML(;
+  const MAX_LEDS = )HTML");
+  webServer.sendContent(String(ledCount));
+  webServer.sendContent(R"HTML(;
   const CURRENT_LED_COUNT = MAX_LEDS;
   let steps = [];
   let scriptLoopEnabled = false;
@@ -1875,6 +1873,18 @@ String buildLogicPage() {
   function buildWheelControl(key, value, labelText) {
     const label = labelText ? `<label>${labelText}</label>` : '';
     return `<div class="field-stack">${label}<div class="mini-wheel-control"><button type="button" class="color-chip-btn" style="background:${value};" title="Farbrad öffnen"></button><div class="mini-wheel-panel"><div class="mini-wheel-stage"><canvas class="mini-wheel" width="96" height="96"></canvas><div class="mini-wheel-marker"></div></div><input type="hidden" data-k="${key}" class="color-wheel-input" value="${value}"><div class="color-readout"><span class="color-swatch" style="background:${value};"></span><input type="text" class="color-hex-input" value="${value}" maxlength="7" spellcheck="false" aria-label="Farbe als Hex eingeben"></div></div></div></div>`;
+  }
+
+  function buildBrightnessSelect(key, value) {
+    const parsed = Number.parseInt(value, 10);
+    const safe = Number.isFinite(parsed) ? parsed : 100;
+    const clamped = Math.min(100, Math.max(0, safe));
+    const selected = Math.round(clamped / 10) * 10;
+    let options = '';
+    for (let level = 0; level <= 100; level += 10) {
+      options += `<option value="${level}"${level === selected ? ' selected' : ''}>${level}</option>`;
+    }
+    return `<div class="number-wrap"><select data-k="${key}" style="width:58px">${options}</select><span>%</span></div>`;
   }
 
   function readBlockValues(id, type) {
@@ -2427,15 +2437,15 @@ String buildLogicPage() {
 
       let inner = '';
       if (step.type === 'set_color') {
-        inner = `<span class="block-label">Farbe</span><div class="field-inline"><label>LEDs</label><div class="led-checklist">${ledCheckboxes(selectedLeds)}</div></div><div class="field-inline"><label>Farbe</label>${buildWheelControl('color', values.color, '')}</div><div class="field-inline"><label>Helligkeit</label><div class="number-wrap"><input type="number" data-k="br" value="${values.br}" min="0" max="100" style="width:68px"><span>%</span></div></div>`;
+        inner = `<span class="block-label">Farbe</span><div class="field-inline"><label>LEDs</label><div class="led-checklist">${ledCheckboxes(selectedLeds)}</div></div><div class="field-inline"><label>Farbe</label>${buildWheelControl('color', values.color, '')}</div><div class="field-inline"><label>Helligkeit</label>${buildBrightnessSelect('br', values.br)}</div>`;
       } else if (step.type === 'set_brightness') {
-        inner = `<span class="block-label">Helligkeit</span><div class="field-inline"><label>LEDs</label><div class="led-checklist">${ledCheckboxes(selectedLeds)}</div></div><div class="field-inline"><label>Wert</label><div class="number-wrap"><input type="number" data-k="br" value="${values.br}" min="0" max="100" style="width:68px"><span>%</span></div></div>`;
+        inner = `<span class="block-label">Helligkeit</span><div class="field-inline"><label>LEDs</label><div class="led-checklist">${ledCheckboxes(selectedLeds)}</div></div><div class="field-inline"><label>Wert</label>${buildBrightnessSelect('br', values.br)}</div>`;
       } else if (step.type === 'fade') {
-        inner = `<span class="block-label">Blend</span><div class="field-inline"><label>LEDs</label><div class="led-checklist">${ledCheckboxes(selectedLeds)}</div></div><div class="field-inline"><label>Von</label>${buildWheelControl('from', values.from, '')}</div><div class="field-inline"><label>Nach</label>${buildWheelControl('to', values.to, '')}</div><div class="field-inline"><label>Helligkeit</label><div class="number-wrap"><input type="number" data-k="br" value="${values.br}" min="0" max="100" style="width:68px"><span>%</span></div></div><div class="field-inline"><label>Dauer</label><div class="number-wrap"><input type="number" data-k="s" value="${values.s}" min="0" max="30" step="0.5" style="width:68px"><span>s</span></div></div>`;
+        inner = `<span class="block-label">Blend</span><div class="field-inline"><label>LEDs</label><div class="led-checklist">${ledCheckboxes(selectedLeds)}</div></div><div class="field-inline"><label>Von</label>${buildWheelControl('from', values.from, '')}</div><div class="field-inline"><label>Nach</label>${buildWheelControl('to', values.to, '')}</div><div class="field-inline"><label>Helligkeit</label>${buildBrightnessSelect('br', values.br)}</div><div class="field-inline"><label>Dauer</label><div class="number-wrap"><input type="number" data-k="s" value="${values.s}" min="0" max="30" step="0.5" style="width:60px"><span>s</span></div></div>`;
       } else if (step.type === 'wait') {
-        inner = `<span class="block-label">Warten</span><div class="field-inline"><label>Dauer</label><div class="number-wrap"><input type="number" data-k="s" value="${values.s}" min="0" max="30" step="0.5" style="width:68px"><span>s</span></div></div>`;
+        inner = `<span class="block-label">Warten</span><div class="field-inline"><label>Dauer</label><div class="number-wrap"><input type="number" data-k="s" value="${values.s}" min="0" max="30" step="0.5" style="width:60px"><span>s</span></div></div>`;
       } else if (step.type === 'repeat_start') {
-        inner = `<span class="block-label">Wiederholen</span><div class="field-inline"><label>Wiederhole</label><div class="number-wrap"><input type="number" data-k="count" value="${values.count}" min="1" max="16" step="1" style="width:68px"><span>mal</span></div></div><span class="inline-note">ab hier bis Wiederholen Ende</span>`;
+        inner = `<span class="block-label">Wiederholen</span><div class="field-inline"><label>Wiederhole</label><div class="number-wrap"><input type="number" data-k="count" value="${values.count}" min="1" max="16" step="1" style="width:60px"><span>mal</span></div></div><span class="inline-note">ab hier bis Wiederholen Ende</span>`;
       } else if (step.type === 'repeat_end') {
         inner = `<span class="block-label">Wiederholen Ende</span><span class="inline-note">Ende Wiederhol-Block</span>`;
       } else if (step.type === 'all_off') {
@@ -2836,8 +2846,7 @@ String buildLogicPage() {
   loadActiveScriptFromDevice();
 </script>
 </body>
-</html>)HTML";
-  return page;
+</html>)HTML");
 }
 
 String buildConfigPage() {
@@ -3119,7 +3128,12 @@ void sendPortalRedirect() {
 }
 
 void handleRoot() {
-  webServer.send(200, "text/html", buildLogicPage());
+  webServer.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+  webServer.sendHeader("Pragma", "no-cache");
+  webServer.sendHeader("Expires", "-1");
+  webServer.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  webServer.send(200, "text/html", "");
+  sendLogicPageStreamed();
 }
 
 void handleConfig() {

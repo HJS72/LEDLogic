@@ -2365,12 +2365,12 @@ void sendLogicPageStreamed() {
 
   function buildVariablePicker(key, type, currentValue) {
     const selectedName = getVariableReferenceName(currentValue);
-    let options = '<option value="">Direktwert</option>';
+    let options = '<option value="">- Variable</option>';
     getVariablesByType(type).forEach(variable => {
       const selected = variable.name === selectedName ? ' selected' : '';
       options += `<option value="${escapeHtml(variable.name)}"${selected}>$${escapeHtml(variable.name)}</option>`;
     });
-    return `<div class="field-stack compact"><label>Variable</label><select data-k="${key}" class="variable-picker">${options}</select></div>`;
+    return `<div class="field-stack compact"><select data-k="${key}" class="variable-picker">${options}</select></div>`;
   }
 
   function buildVariableNameSelect(key, currentValue, allowedTypes) {
@@ -2422,7 +2422,7 @@ void sendLogicPageStreamed() {
     const modeOptions = `<option value="fixed"${!isVariableMode ? ' selected' : ''}>fix</option><option value="var"${isVariableMode ? ' selected' : ''}>var</option>`;
     const fixedStyle = isVariableMode ? ' style="display:none"' : '';
     const variableStyle = isVariableMode ? '' : ' style="display:none"';
-    return `<div class="field-inline led-target-field"><label>LEDs</label><div class="field-stack compact"><label>Quelle</label><select data-k="leds_mode" class="variable-picker"${modeDisabled}>${modeOptions}</select></div><div class="led-checklist" data-led-target="fixed"${fixedStyle}>${ledCheckboxes(directValue)}</div><div data-led-target="var"${variableStyle}>${buildVariablePicker('leds_var', 'led_mask', value)}</div></div>`;
+    return `<div class="field-inline led-target-field"><label>LEDs</label><div class="field-stack compact" style="width:40%;"><select data-k="leds_mode" class="variable-picker"${modeDisabled}>${modeOptions}</select></div><div class="led-checklist" data-led-target="fixed"${fixedStyle}>${ledCheckboxes(directValue)}</div><div data-led-target="var"${variableStyle}>${buildVariablePicker('leds_var', 'led_mask', value)}</div></div>`;
   }
 
   function updateLedTargetMode(field) {

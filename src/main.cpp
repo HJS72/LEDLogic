@@ -2415,8 +2415,39 @@ void sendLogicPageStreamed() {
   }
 
   function buildLedTargetField(value) {
+    const ledVariables = getVariablesByType('led_mask');
+    const isVariableMode = isVariableReference(value) && ledVariables.length > 0;
     const directValue = isVariableReference(value) ? defaultLedsCsv() : value;
-    return `<div class="field-inline"><label>LEDs</label><div class="led-checklist">${ledCheckboxes(directValue)}</div>${buildVariablePicker('leds_var', 'led_mask', value)}</div>`;
+    const modeDisabled = ledVariables.length === 0 ? ' disabled' : '';
+    const modeOptions = `<option value="fixed"${!isVariableMode ? ' selected' : ''}>fix</option><option value="var"${isVariableMode ? ' selected' : ''}>var</option>`;
+    const fixedStyle = isVariableMode ? ' style="display:none"' : '';
+    const variableStyle = isVariableMode ? '' : ' style="display:none"';
+    return `<div class="field-inline led-target-field"><label>LEDs</label><div class="field-stack compact"><label>Quelle</label><select data-k="leds_mode" class="variable-picker"${modeDisabled}>${modeOptions}</select></div><div class="led-checklist" data-led-target="fixed"${fixedStyle}>${ledCheckboxes(directValue)}</div><div data-led-target="var"${variableStyle}>${buildVariablePicker('leds_var', 'led_mask', value)}</div></div>`;
+  }
+
+  function updateLedTargetMode(field) {
+    const modeSelect = field.querySelector('[data-k="leds_mode"]');
+    const fixedTarget = field.querySelector('[data-led-target="fixed"]');
+    const variableTarget = field.querySelector('[data-led-target="var"]');
+    if (!modeSelect || !fixedTarget || !variableTarget) {
+      return;
+    }
+    const useVariable = modeSelect.value === 'var';
+    fixedTarget.style.display = useVariable ? 'none' : '';
+    variableTarget.style.display = useVariable ? '' : 'none';
+  }
+
+  function initLedTargetFields() {
+    document.querySelectorAll('.led-target-field').forEach(field => {
+      const modeSelect = field.querySelector('[data-k="leds_mode"]');
+      if (!modeSelect || modeSelect.dataset.bound === 'true') {
+        updateLedTargetMode(field);
+        return;
+      }
+      modeSelect.dataset.bound = 'true';
+      modeSelect.addEventListener('change', () => updateLedTargetMode(field));
+      updateLedTargetMode(field);
+    });
   }
 
   function resolveBlockValue(el, key, fallback) {
@@ -2450,8 +2481,9 @@ void sendLogicPageStreamed() {
       return field ? field.value : null;
     };
     const getLedsCsv = () => {
+      const modeField = el.querySelector('[data-k="leds_mode"]');
       const variableField = el.querySelector('[data-k="leds_var"]');
-      if (variableField && variableField.value) {
+      if (modeField && modeField.value === 'var' && variableField && variableField.value) {
         return '$' + variableField.value;
       }
       const selected = Array.from(el.querySelectorAll('input[type="checkbox"][data-k="leds"]:checked'))
@@ -3140,6 +3172,7 @@ void sendLogicPageStreamed() {
     }
 
     initAllColorWheels();
+    initLedTargetFields();
     syncDragDropWithColorWheel();
     startLedPreviewPlayback();
   }

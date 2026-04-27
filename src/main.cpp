@@ -39,9 +39,33 @@ constexpr size_t kMaxScriptJsonLen = 4096;
 constexpr char kScriptDir[] = "/scripts";
 constexpr uint8_t kScriptMaxNameLen = 32;
 constexpr uint8_t kMaxSavedScripts = 20;
+constexpr uint8_t kMaxVariables = 16;
 
 // ---- Script system ----
-enum class ScriptOpType : uint8_t { kSet = 0, kWait = 1, kFade = 2, kAllOff = 3, kBrightness = 4 };
+enum class ScriptOpType : uint8_t { 
+  kSet = 0, 
+  kWait = 1, 
+  kFade = 2, 
+  kAllOff = 3, 
+  kBrightness = 4,
+  // V2: Variable operations
+  kSetVariable = 5,      // var_name = value
+  kChangeVariable = 6    // var_name += value (or -=, *=, etc)
+};
+
+enum class VarType : uint8_t { 
+  kLedMask = 0,          // bitmask 0-4095
+  kBrightness = 1,       // 0-255
+  kDuration = 2,         // milliseconds 0-65535
+  kColor = 3             // RGB color
+};
+
+struct Variable {
+  char name[16];         // variable identifier
+  VarType type;
+  uint16_t value;        // for ledMask, brightness, duration
+  uint8_t r, g, b;       // only used for kColor type
+};
 
 struct ScriptStep {
   ScriptOpType op;
@@ -50,6 +74,10 @@ struct ScriptStep {
   uint8_t r2, g2, b2;
   uint8_t brightness;    // 0-255
   uint32_t durationMs;
+  
+  // V2: Variable operation fields
+  uint8_t varIndex;      // index into variables array
+  uint8_t operation;     // 0=set, 1=add, 2=subtract, 3=multiply
 };
 
 struct LedConfig {
@@ -102,6 +130,11 @@ bool scriptLoop = false;
 bool scriptRunning = false;
 uint8_t scriptCurrentStep = 0;
 unsigned long scriptStepStartMs = 0;
+
+// V2: Variables runtime state
+Variable scriptVariables[kMaxVariables];
+uint8_t scriptVariableCount = 0;
+
 // Script output buffer (written by interpreter, read by ws2812Show)
 uint8_t scriptR[kLedMaxCount] = {};
 uint8_t scriptG[kLedMaxCount] = {};
@@ -432,6 +465,57 @@ static uint16_t allLedMask() {
   return static_cast<uint16_t>((1UL << kLedMaxCount) - 1U);
 }
 
+// V2: Variable helpers
+static int findVariableIndex(const String& varName) {
+  for (uint8_t i = 0; i < scriptVariableCount; ++i) {
+    if (String(scriptVariables[i].name) == varName) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+static bool createOrUpdateVariable(const String& varName, VarType type, uint16_t value, 
+                                    uint8_t r = 0, uint8_t g = 0, uint8_t b = 0) {
+  int idx = findVariableIndex(varName);
+  if (idx >= 0) {
+    // Update existing
+    scriptVariables[idx].type = type;
+    scriptVariables[idx].value = value;
+    scriptVariables[idx].r = r;
+    scriptVariables[idx].g = g;
+    scriptVariables[idx].b = b;
+    return true;
+  }
+  
+  // Create new if space available
+  if (scriptVariableCount < kMaxVariables) {
+    idx = scriptVariableCount++;
+    strncpy(scriptVariables[idx].name, varName.c_str(), sizeof(scriptVariables[idx].name) - 1);
+    scriptVariables[idx].name[sizeof(scriptVariables[idx].name) - 1] = '\0';
+    scriptVariables[idx].type = type;
+    scriptVariables[idx].value = value;
+    scriptVariables[idx].r = r;
+    scriptVariables[idx].g = g;
+    scriptVariables[idx].b = b;
+    return true;
+  }
+  return false;
+}
+
+static uint16_t getVariableValue(const String& varName, uint16_t defaultValue = 0) {
+  int idx = findVariableIndex(varName);
+  if (idx >= 0) {
+    return scriptVariables[idx].value;
+  }
+  return defaultValue;
+}
+
+static void clearVariables() {
+  scriptVariableCount = 0;
+  memset(scriptVariables, 0, sizeof(scriptVariables));
+}
+
 static void scriptAllOff() {
   for (uint8_t i = 0; i < kLedMaxCount; ++i) {
     scriptEnabled[i] = false;
@@ -500,6 +584,20 @@ bool parseAndRunScript(const String& json) {
     } else if (opType == "all_off") {
       step.op = ScriptOpType::kAllOff;
       step.ledMask = parseLedMaskFromOp(opJson, allLedMask());
+    } else if (opType == "set_var") {
+      // V2: {"op":"set_var","name":"brightness","type":"brightness","value":200}
+      step.op = ScriptOpType::kSetVariable;
+      step.varIndex = 0;  // will be resolved at runtime
+      step.operation = 0;  // set operation
+    } else if (opType == "change_var") {
+      // V2: {"op":"change_var","name":"brightness","op_type":"add","value":50}
+      step.op = ScriptOpType::kChangeVariable;
+      step.varIndex = 0;  // will be resolved at runtime
+      const String opTypeStr = extractJsonStr(opJson, "op_type");
+      if (opTypeStr == "add") step.operation = 1;
+      else if (opTypeStr == "subtract") step.operation = 2;
+      else if (opTypeStr == "multiply") step.operation = 3;
+      else step.operation = 0;  // default to set
     } else {
       valid = false;
     }
@@ -511,6 +609,47 @@ bool parseAndRunScript(const String& json) {
   }
 
   if (scriptStepCount == 0) return false;
+
+  // V2: Clear previous variables and load new ones
+  clearVariables();
+  
+  // Parse variables section if present
+  const int varsStart = json.indexOf("\"vars\"");
+  if (varsStart >= 0) {
+    const int varsArrayStart = json.indexOf('[', varsStart);
+    const int varsArrayEnd = json.indexOf(']', varsArrayStart);
+    if (varsArrayStart >= 0 && varsArrayEnd > varsArrayStart) {
+      int varPos = varsArrayStart + 1;
+      while (varPos < varsArrayEnd && scriptVariableCount < kMaxVariables) {
+        const int varStart = json.indexOf('{', varPos);
+        if (varStart < 0 || varStart >= varsArrayEnd) break;
+        const int varEnd = json.indexOf('}', varStart);
+        if (varEnd < 0 || varEnd > varsArrayEnd) break;
+        
+        const String varJson = json.substring(varStart, varEnd + 1);
+        const String varName = extractJsonStr(varJson, "name");
+        const String varTypeStr = extractJsonStr(varJson, "type");
+        const String varValueStr = extractJsonStr(varJson, "value");
+        
+        if (!varName.isEmpty() && !varTypeStr.isEmpty()) {
+          VarType vtype = VarType::kDuration;  // default
+          if (varTypeStr == "brightness") vtype = VarType::kBrightness;
+          else if (varTypeStr == "led_mask") vtype = VarType::kLedMask;
+          else if (varTypeStr == "color") vtype = VarType::kColor;
+          
+          uint16_t value = varValueStr.toInt();
+          uint8_t r = 0, g = 0, b = 0;
+          
+          if (vtype == VarType::kColor) {
+            parseHexColor(varValueStr, r, g, b);
+          }
+          
+          createOrUpdateVariable(varName, vtype, value, r, g, b);
+        }
+        varPos = varEnd + 1;
+      }
+    }
+  }
 
   scriptAllOff();
   scriptCurrentStep = 0;
@@ -646,6 +785,20 @@ void tickScript() {
         ws2812Show();
       }
       break;
+
+    case ScriptOpType::kSetVariable: {
+      // V2: Execute immediately, does not wait
+      // Note: varIndex and operation fields are set during parsing
+      advance = true;
+      break;
+    }
+
+    case ScriptOpType::kChangeVariable: {
+      // V2: Execute immediately, does not wait
+      // The actual variable math happens when we process the JSON
+      advance = true;
+      break;
+    }
   }
 
   if (advance) {

@@ -1746,6 +1746,8 @@ void sendLogicPageStreamed() {
     .block-repeat_start, .tool-repeat_start { background:#f7f3ff; border-left:6px solid #7c58c9; }
     .block-repeat_end, .tool-repeat_end { background:#f2edff; border-left:6px solid #5d40a8; }
     .block-all_off, .tool-all_off { background:#fff1f1; border-left:6px solid #d85a5a; }
+    .block-set_variable, .tool-set_variable,
+    .block-change_variable, .tool-change_variable { background:#eefbf5; border-left:6px solid #2f9d68; }
     .block-script_start { background:#e9f5ef; border-left:6px solid #22a06b; }
     .block-script_end { background:#e9f5ef; border-left:6px solid #22a06b; }
     .block-script_start, .block-script_end { align-items:center; min-height:auto; }
@@ -1759,6 +1761,10 @@ void sendLogicPageStreamed() {
     .led-checklist { display:flex; align-items:center; flex-wrap:wrap; gap:6px; }
     .led-check { display:inline-flex; align-items:center; gap:4px; font-size:0.82rem; color:var(--text); padding:2px 6px; border:1px solid rgba(20,32,51,0.16); border-radius:999px; background:#ffffff; }
     .led-check input { margin:0; }
+    .field-stack.compact { gap:6px; min-width:120px; }
+    .field-stack.compact label { margin:0; }
+    .variable-picker { min-width:118px; max-width:160px; }
+    .field-inline input.var-direct-input { width:96px; }
     .number-wrap { display:flex; align-items:center; gap:6px; }
     .block-actions { margin-left:auto; display:flex; align-items:center; gap:4px; }
     .block-mini-btn { width:28px; height:28px; display:inline-flex; align-items:center; justify-content:center; border:1px solid rgba(20,32,51,0.18); border-radius:7px; background:#f4f7fc; color:#405070; padding:0; cursor:pointer; }
@@ -1912,6 +1918,8 @@ void sendLogicPageStreamed() {
         <div class="tool-item tool-set_brightness" draggable="true" data-tool="set_brightness">Helligkeit setzen</div>
         <div class="tool-item tool-fade" draggable="true" data-tool="fade">Überblenden</div>
         <div class="tool-item tool-wait" draggable="true" data-tool="wait">Warten</div>
+        <div class="tool-item tool-set_variable" draggable="true" data-tool="set_variable">Variable setzen</div>
+        <div class="tool-item tool-change_variable" draggable="true" data-tool="change_variable">Variable ändern</div>
         <div class="tool-item tool-repeat_start" draggable="true" data-tool="repeat">Wiederholen</div>
         <div class="tool-item tool-all_off" draggable="true" data-tool="all_off">Ausschalten</div>
       </aside>
@@ -2219,6 +2227,12 @@ void sendLogicPageStreamed() {
     if (type === 'wait') {
       return { s: '1.0' };
     }
+    if (type === 'set_variable') {
+      return { name: 'var_name', varType: 'brightness', value: '100' };
+    }
+    if (type === 'change_variable') {
+      return { name: 'var_name', op_type: 'add', value: '10' };
+    }
     if (type === 'repeat_start') {
       return { count: '2' };
     }
@@ -2273,6 +2287,64 @@ void sendLogicPageStreamed() {
     return `<div class="field-stack">${label}<div class="mini-wheel-control"><button type="button" class="color-chip-btn" style="background:${value};" title="Farbrad öffnen"></button><div class="mini-wheel-panel"><div class="mini-wheel-stage"><canvas class="mini-wheel" width="96" height="96"></canvas><div class="mini-wheel-marker"></div></div><input type="hidden" data-k="${key}" class="color-wheel-input" value="${value}"><div class="color-readout"><span class="color-swatch" style="background:${value};"></span><input type="text" class="color-hex-input" value="${value}" maxlength="7" spellcheck="false" aria-label="Farbe als Hex eingeben"></div></div></div></div>`;
   }
 
+  function getVariablesByType(type) {
+    return currentVariables.filter(variable => variable.type === type);
+  }
+
+  function isVariableReference(value) {
+    return typeof value === 'string' && value.startsWith('$');
+  }
+
+  function getVariableReferenceName(value) {
+    return isVariableReference(value) ? value.slice(1) : '';
+  }
+
+  function buildVariablePicker(key, type, currentValue) {
+    const selectedName = getVariableReferenceName(currentValue);
+    let options = '<option value="">Direktwert</option>';
+    getVariablesByType(type).forEach(variable => {
+      const selected = variable.name === selectedName ? ' selected' : '';
+      options += `<option value="${escapeHtml(variable.name)}"${selected}>$${escapeHtml(variable.name)}</option>`;
+    });
+    return `<div class="field-stack compact"><label>Variable</label><select data-k="${key}" class="variable-picker">${options}</select></div>`;
+  }
+
+  function getColorDirectValue(rawValue) {
+    if (isVariableReference(rawValue)) {
+      const variable = currentVariables.find(entry => entry.name === getVariableReferenceName(rawValue) && entry.type === 'color');
+      return variable && variable.hex ? variable.hex : '#FF0000';
+    }
+    return rawValue || '#FF0000';
+  }
+
+  function buildColorField(key, value) {
+    return `<div class="field-inline"><label>Farbe</label>${buildWheelControl(key, getColorDirectValue(value), '')}${buildVariablePicker(key + '_var', 'color', value)}</div>`;
+  }
+
+  function buildBrightnessField(key, value, labelText) {
+    const directValue = isVariableReference(value) ? '100' : value;
+    return `<div class="field-inline"><label>${labelText}</label>${buildBrightnessSelect(key, directValue)}${buildVariablePicker(key + '_var', 'brightness', value)}</div>`;
+  }
+
+  function buildDurationField(key, value, labelText) {
+    const directValue = isVariableReference(value) ? '1.0' : value;
+    return `<div class="field-inline"><label>${labelText}</label><div class="number-wrap"><input type="number" data-k="${key}" class="var-direct-input" value="${directValue}" min="0" max="30" step="0.5" style="width:60px"><span>s</span></div>${buildVariablePicker(key + '_var', 'duration', value)}</div>`;
+  }
+
+  function buildLedTargetField(value) {
+    const directValue = isVariableReference(value) ? defaultLedsCsv() : value;
+    return `<div class="field-inline"><label>LEDs</label><div class="led-checklist">${ledCheckboxes(directValue)}</div>${buildVariablePicker('leds_var', 'led_mask', value)}</div>`;
+  }
+
+  function resolveBlockValue(el, key, fallback) {
+    const variableField = el.querySelector(`[data-k="${key}_var"]`);
+    if (variableField && variableField.value) {
+      return '$' + variableField.value;
+    }
+    const field = el.querySelector(`[data-k="${key}"]`);
+    return field ? field.value : fallback;
+  }
+
   function buildBrightnessSelect(key, value) {
     const parsed = Number.parseInt(value, 10);
     const safe = Number.isFinite(parsed) ? parsed : 100;
@@ -2295,21 +2367,37 @@ void sendLogicPageStreamed() {
       return field ? field.value : null;
     };
     const getLedsCsv = () => {
+      const variableField = el.querySelector('[data-k="leds_var"]');
+      if (variableField && variableField.value) {
+        return '$' + variableField.value;
+      }
       const selected = Array.from(el.querySelectorAll('input[type="checkbox"][data-k="leds"]:checked'))
         .map(input => input.value);
       return selected.length > 0 ? selected.join(',') : '0';
     };
     if (type === 'set_color') {
-      return { leds: getLedsCsv(), color: get('color'), br: get('br') };
+      return { leds: getLedsCsv(), color: resolveBlockValue(el, 'color', '#FF0000'), br: resolveBlockValue(el, 'br', '100') };
     }
     if (type === 'set_brightness') {
-      return { leds: getLedsCsv(), br: get('br') };
+      return { leds: getLedsCsv(), br: resolveBlockValue(el, 'br', '100') };
     }
     if (type === 'fade') {
-      return { leds: getLedsCsv(), from: get('from'), to: get('to'), br: get('br'), s: get('s') };
+      return {
+        leds: getLedsCsv(),
+        from: resolveBlockValue(el, 'from', '#FF0000'),
+        to: resolveBlockValue(el, 'to', '#0000FF'),
+        br: resolveBlockValue(el, 'br', '100'),
+        s: resolveBlockValue(el, 's', '1.0')
+      };
     }
     if (type === 'wait') {
-      return { s: get('s') };
+      return { s: resolveBlockValue(el, 's', '1.0') };
+    }
+    if (type === 'set_variable') {
+      return { name: get('name'), varType: get('varType'), value: get('value') };
+    }
+    if (type === 'change_variable') {
+      return { name: get('name'), op_type: get('op_type'), value: get('value') };
     }
     if (type === 'repeat_start') {
       return { count: get('count') };
@@ -2406,21 +2494,31 @@ void sendLogicPageStreamed() {
       step.led = selectedLeds[0];
       step.leds = ledsCsv;
       step.color = values.color;
-      step.br = parseInt(values.br, 10);
+      step.br = isVariableReference(values.br) ? values.br : parseInt(values.br, 10);
     } else if (type === 'set_brightness') {
       step.op = 'brightness';
       step.led = selectedLeds[0];
       step.leds = ledsCsv;
-      step.br = parseInt(values.br, 10);
+      step.br = isVariableReference(values.br) ? values.br : parseInt(values.br, 10);
     } else if (type === 'fade') {
       step.led = selectedLeds[0];
       step.leds = ledsCsv;
       step.from = values.from;
       step.to = values.to;
-      step.br = parseInt(values.br, 10);
-      step.s = parseFloat(values.s);
+      step.br = isVariableReference(values.br) ? values.br : parseInt(values.br, 10);
+      step.s = isVariableReference(values.s) ? values.s : parseFloat(values.s);
     } else if (type === 'wait') {
-      step.s = parseFloat(values.s);
+      step.s = isVariableReference(values.s) ? values.s : parseFloat(values.s);
+    } else if (type === 'set_variable') {
+      step.op = 'set_var';
+      step.name = values.name;
+      step.type = values.varType;
+      step.value = values.value;
+    } else if (type === 'change_variable') {
+      step.op = 'change_var';
+      step.name = values.name;
+      step.op_type = values.op_type;
+      step.value = parseInt(values.value, 10);
     } else if (type === 'repeat_start') {
       step.op = 'repeat_start';
       step.count = parseInt(values.count, 10);
@@ -2546,6 +2644,56 @@ void sendLogicPageStreamed() {
 
     const runId = ++ledPreviewRunId;
     const state = createLedPreviewState();
+    const variableStore = {};
+
+    (payload.vars || []).forEach(variable => {
+      variableStore[variable.name] = { ...variable };
+    });
+
+    function getVariableReference(rawValue) {
+      if (typeof rawValue === 'string' && rawValue.startsWith('$')) {
+        return variableStore[rawValue.slice(1)] || null;
+      }
+      return null;
+    }
+
+    function resolvePreviewLedTargets(rawValue, fallbackLed) {
+      const variable = getVariableReference(rawValue);
+      if (variable && variable.type === 'led_mask') {
+        const result = [];
+        for (let index = 0; index < MAX_LEDS; index += 1) {
+          if ((variable.value || 0) & (1 << index)) {
+            result.push(index);
+          }
+        }
+        return result.length ? result : [0];
+      }
+      return normalizeLedCsv(rawValue || String(fallbackLed));
+    }
+
+    function resolvePreviewBrightness(rawValue) {
+      const variable = getVariableReference(rawValue);
+      if (variable && variable.type === 'brightness') {
+        return variable.value;
+      }
+      return Number.isFinite(rawValue) ? rawValue : parseInt(rawValue || '100', 10);
+    }
+
+    function resolvePreviewDurationMs(rawValue) {
+      const variable = getVariableReference(rawValue);
+      if (variable && variable.type === 'duration') {
+        return variable.value;
+      }
+      return Math.max(0, (parseFloat(rawValue || 0) || 0) * 1000);
+    }
+
+    function resolvePreviewColor(rawValue) {
+      const variable = getVariableReference(rawValue);
+      if (variable && variable.type === 'color') {
+        return { r: variable.r, g: variable.g, b: variable.b };
+      }
+      return hexToRgb(rawValue || '#000000');
+    }
 
     function runStep(stepIndex) {
       if (runId !== ledPreviewRunId) {
@@ -2559,11 +2707,12 @@ void sendLogicPageStreamed() {
       }
 
       const step = payload.ops[stepIndex];
-      const targetLeds = normalizeLedCsv(step.leds || String(step.led));
+      const targetLeds = resolvePreviewLedTargets(step.leds, step.led);
       if (step.op === 'set') {
-        const rgb = hexToRgb(step.color || '#000000');
+        const rgb = resolvePreviewColor(step.color || '#000000');
+        const brightness = resolvePreviewBrightness(step.br);
         targetLeds.forEach(ledIndex => {
-          state[ledIndex] = { enabled: true, r: rgb.r, g: rgb.g, b: rgb.b, br: Number.isFinite(step.br) ? step.br : 100 };
+          state[ledIndex] = { enabled: true, r: rgb.r, g: rgb.g, b: rgb.b, br: brightness };
         });
         applyLedPreviewState(state);
         scheduleLedPreviewNext(() => runStep(stepIndex + 1), 0);
@@ -2571,9 +2720,10 @@ void sendLogicPageStreamed() {
       }
 
       if (step.op === 'brightness') {
+        const brightness = resolvePreviewBrightness(step.br);
         targetLeds.forEach(ledIndex => {
           const current = state[ledIndex] || { enabled: false, r: 0, g: 0, b: 0, br: 0 };
-          state[ledIndex] = { ...current, enabled: true, br: Number.isFinite(step.br) ? step.br : current.br };
+          state[ledIndex] = { ...current, enabled: true, br: Number.isFinite(brightness) ? brightness : current.br };
         });
         applyLedPreviewState(state);
         scheduleLedPreviewNext(() => runStep(stepIndex + 1), 0);
@@ -2593,15 +2743,15 @@ void sendLogicPageStreamed() {
       }
 
       if (step.op === 'wait') {
-        scheduleLedPreviewNext(() => runStep(stepIndex + 1), Math.max(0, (step.s || 0) * 1000));
+        scheduleLedPreviewNext(() => runStep(stepIndex + 1), resolvePreviewDurationMs(step.s));
         return;
       }
 
       if (step.op === 'fade') {
-        const from = hexToRgb(step.from || '#000000');
-        const to = hexToRgb(step.to || '#000000');
-        const duration = Math.max(0, (step.s || 0) * 1000);
-        const brightness = Number.isFinite(step.br) ? step.br : 100;
+        const from = resolvePreviewColor(step.from || '#000000');
+        const to = resolvePreviewColor(step.to || '#000000');
+        const duration = resolvePreviewDurationMs(step.s);
+        const brightness = resolvePreviewBrightness(step.br);
         if (duration === 0) {
           targetLeds.forEach(ledIndex => {
             state[ledIndex] = { enabled: true, r: to.r, g: to.g, b: to.b, br: brightness };
@@ -2635,6 +2785,30 @@ void sendLogicPageStreamed() {
           }
         }
         ledPreviewFrameId = requestAnimationFrame(animateFade);
+        return;
+      }
+
+      if (step.op === 'set_var') {
+        if (step.type === 'color') {
+          const rgb = resolvePreviewColor(step.value || '#000000');
+          variableStore[step.name] = { name: step.name, type: 'color', value: 0, r: rgb.r, g: rgb.g, b: rgb.b, hex: rgbToHex(rgb.r, rgb.g, rgb.b) };
+        } else {
+          variableStore[step.name] = { name: step.name, type: step.type, value: parseInt(step.value || 0, 10) || 0, r: 0, g: 0, b: 0 };
+        }
+        scheduleLedPreviewNext(() => runStep(stepIndex + 1), 0);
+        return;
+      }
+
+      if (step.op === 'change_var') {
+        const current = variableStore[step.name];
+        if (current && current.type !== 'color') {
+          const delta = parseInt(step.value || 0, 10) || 0;
+          if (step.op_type === 'add') current.value += delta;
+          else if (step.op_type === 'subtract') current.value -= delta;
+          else if (step.op_type === 'multiply') current.value *= delta;
+          else current.value = delta;
+        }
+        scheduleLedPreviewNext(() => runStep(stepIndex + 1), 0);
         return;
       }
 
@@ -2835,19 +3009,23 @@ void sendLogicPageStreamed() {
 
       let inner = '';
       if (step.type === 'set_color') {
-        inner = `<span class="block-label">Farbe</span><div class="field-inline"><label>LEDs</label><div class="led-checklist">${ledCheckboxes(selectedLeds)}</div></div><div class="field-inline"><label>Farbe</label>${buildWheelControl('color', values.color, '')}</div><div class="field-inline"><label>Helligkeit</label>${buildBrightnessSelect('br', values.br)}</div>`;
+        inner = `<span class="block-label">Farbe</span>${buildLedTargetField(selectedLeds)}${buildColorField('color', values.color)}${buildBrightnessField('br', values.br, 'Helligkeit')}`;
       } else if (step.type === 'set_brightness') {
-        inner = `<span class="block-label">Helligkeit</span><div class="field-inline"><label>LEDs</label><div class="led-checklist">${ledCheckboxes(selectedLeds)}</div></div><div class="field-inline"><label>Wert</label>${buildBrightnessSelect('br', values.br)}</div>`;
+        inner = `<span class="block-label">Helligkeit</span>${buildLedTargetField(selectedLeds)}${buildBrightnessField('br', values.br, 'Wert')}`;
       } else if (step.type === 'fade') {
-        inner = `<span class="block-label">Blend</span><div class="field-inline"><label>LEDs</label><div class="led-checklist">${ledCheckboxes(selectedLeds)}</div></div><div class="field-inline"><label>Von</label>${buildWheelControl('from', values.from, '')}</div><div class="field-inline"><label>Nach</label>${buildWheelControl('to', values.to, '')}</div><div class="field-inline"><label>Helligkeit</label>${buildBrightnessSelect('br', values.br)}</div><div class="field-inline"><label>Dauer</label><div class="number-wrap"><input type="number" data-k="s" value="${values.s}" min="0" max="30" step="0.5" style="width:60px"><span>s</span></div></div>`;
+        inner = `<span class="block-label">Blend</span>${buildLedTargetField(selectedLeds)}<div class="field-inline"><label>Von</label>${buildWheelControl('from', getColorDirectValue(values.from), '')}${buildVariablePicker('from_var', 'color', values.from)}</div><div class="field-inline"><label>Nach</label>${buildWheelControl('to', getColorDirectValue(values.to), '')}${buildVariablePicker('to_var', 'color', values.to)}</div>${buildBrightnessField('br', values.br, 'Helligkeit')}${buildDurationField('s', values.s, 'Dauer')}`;
       } else if (step.type === 'wait') {
-        inner = `<span class="block-label">Warten</span><div class="field-inline"><label>Dauer</label><div class="number-wrap"><input type="number" data-k="s" value="${values.s}" min="0" max="30" step="0.5" style="width:60px"><span>s</span></div></div>`;
+        inner = `<span class="block-label">Warten</span>${buildDurationField('s', values.s, 'Dauer')}`;
+      } else if (step.type === 'set_variable') {
+        inner = `<span class="block-label">Variable setzen</span><div class="field-inline"><label>Name</label><input type="text" data-k="name" value="${values.name}" maxlength="15"></div><div class="field-inline"><label>Typ</label><select data-k="varType"><option value="brightness"${values.varType === 'brightness' ? ' selected' : ''}>Helligkeit</option><option value="duration"${values.varType === 'duration' ? ' selected' : ''}>Dauer</option><option value="led_mask"${values.varType === 'led_mask' ? ' selected' : ''}>LED-Auswahl</option><option value="color"${values.varType === 'color' ? ' selected' : ''}>Farbe</option></select></div><div class="field-inline"><label>Wert</label><input type="text" data-k="value" value="${values.value}" placeholder="100 oder #FF0000"></div>`;
+      } else if (step.type === 'change_variable') {
+        inner = `<span class="block-label">Variable ändern</span><div class="field-inline"><label>Name</label><input type="text" data-k="name" value="${values.name}" maxlength="15"></div><div class="field-inline"><label>Aktion</label><select data-k="op_type"><option value="add"${values.op_type === 'add' ? ' selected' : ''}>Addieren</option><option value="subtract"${values.op_type === 'subtract' ? ' selected' : ''}>Subtrahieren</option><option value="multiply"${values.op_type === 'multiply' ? ' selected' : ''}>Multiplizieren</option><option value="set"${values.op_type === 'set' ? ' selected' : ''}>Setzen</option></select></div><div class="field-inline"><label>Wert</label><input type="number" data-k="value" value="${values.value}" min="0" max="65535"></div>`;
       } else if (step.type === 'repeat_start') {
         inner = `<span class="block-label">Wiederholen</span><div class="field-inline"><label>Wiederhole</label><div class="number-wrap"><input type="number" data-k="count" value="${values.count}" min="1" max="16" step="1" style="width:60px"><span>mal</span></div></div><span class="inline-note">ab hier bis Wiederholen Ende</span>`;
       } else if (step.type === 'repeat_end') {
         inner = `<span class="block-label">Wiederholen Ende</span><span class="inline-note">Ende Wiederhol-Block</span>`;
       } else if (step.type === 'all_off') {
-        inner = `<span class="block-label">Ausschalten</span><div class="field-inline"><label>LEDs</label><div class="led-checklist">${ledCheckboxes(selectedLeds)}</div></div>`;
+        inner = `<span class="block-label">Ausschalten</span>${buildLedTargetField(selectedLeds)}`;
       }
       inner += `<div class="block-actions"><button class="block-mini-btn copy" onclick="duplicateBlock(${step.id})" title="Kopieren" aria-label="Kopieren"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"></rect><rect x="4" y="4" width="11" height="11" rx="2"></rect></svg></button><button class="block-mini-btn remove" onclick="removeBlock(${step.id})" title="Entfernen" aria-label="Entfernen"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12"></path><path d="M18 6 6 18"></path></svg></button></div>`;
       div.innerHTML = inner;
@@ -2922,6 +3100,7 @@ void sendLogicPageStreamed() {
     }
     return {
       loop: scriptLoopEnabled,
+      vars: currentVariables.map(variable => ({ name: variable.name, type: variable.type, value: variable.type === 'color' ? variable.hex : variable.value })),
       ops: compiled.ops
     };
   }
@@ -3175,6 +3354,10 @@ void sendLogicPageStreamed() {
         result.push({ id, type: 'fade', values: { leds: op.leds || String(op.led != null ? op.led : 0), from: op.from || '#FF0000', to: op.to || '#0000FF', br: String(op.br != null ? op.br : 100), s: String(op.s != null ? op.s : 1) } });
       } else if (op.op === 'wait') {
         result.push({ id, type: 'wait', values: { s: String(op.s != null ? op.s : 1) } });
+      } else if (op.op === 'set_var') {
+        result.push({ id, type: 'set_variable', values: { name: op.name || 'var_name', varType: op.type || 'brightness', value: String(op.value != null ? op.value : 0) } });
+      } else if (op.op === 'change_var') {
+        result.push({ id, type: 'change_variable', values: { name: op.name || 'var_name', op_type: op.op_type || 'add', value: String(op.value != null ? op.value : 0) } });
       } else if (op.op === 'all_off') {
         result.push({ id, type: 'all_off', values: { leds: op.leds || String(op.led != null ? op.led : 0) } });
       }

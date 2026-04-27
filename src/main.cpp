@@ -2314,8 +2314,45 @@ void sendLogicPageStreamed() {
     return `<div class="field-stack">${label}<div class="mini-wheel-control"><button type="button" class="color-chip-btn" style="background:${value};" title="Farbrad öffnen"></button><div class="mini-wheel-panel"><div class="mini-wheel-stage"><canvas class="mini-wheel" width="96" height="96"></canvas><div class="mini-wheel-marker"></div></div><input type="hidden" data-k="${key}" class="color-wheel-input" value="${value}"><div class="color-readout"><span class="color-swatch" style="background:${value};"></span><input type="text" class="color-hex-input" value="${value}" maxlength="7" spellcheck="false" aria-label="Farbe als Hex eingeben"></div></div></div></div>`;
   }
 
+  function getEditorVariablePool() {
+    const merged = [];
+    const seenNames = new Set();
+
+    currentVariables.forEach(variable => {
+      if (!variable || !variable.name || !variable.type) {
+        return;
+      }
+      const name = String(variable.name).trim();
+      const type = String(variable.type).trim();
+      if (!name || !type || seenNames.has(name)) {
+        return;
+      }
+      seenNames.add(name);
+      merged.push({ name, type });
+    });
+
+    steps.forEach(step => {
+      if (!step || step.type !== 'set_variable') {
+        return;
+      }
+      const values = step.values || {};
+      const name = String(values.name || '').trim();
+      const type = String(values.varType || '').trim();
+      if (!name || !type || seenNames.has(name)) {
+        return;
+      }
+      if (type !== 'brightness' && type !== 'duration' && type !== 'led_mask' && type !== 'color') {
+        return;
+      }
+      seenNames.add(name);
+      merged.push({ name, type });
+    });
+
+    return merged;
+  }
+
   function getVariablesByType(type) {
-    return currentVariables.filter(variable => variable.type === type);
+    return getEditorVariablePool().filter(variable => variable.type === type);
   }
 
   function isVariableReference(value) {
@@ -2338,7 +2375,7 @@ void sendLogicPageStreamed() {
 
   function buildVariableNameSelect(key, currentValue, allowedTypes) {
     const types = Array.isArray(allowedTypes) ? allowedTypes : [];
-    const filteredVariables = currentVariables.filter(variable => types.length === 0 || types.includes(variable.type));
+    const filteredVariables = getEditorVariablePool().filter(variable => types.length === 0 || types.includes(variable.type));
     let options = '';
 
     filteredVariables.forEach(variable => {

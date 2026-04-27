@@ -1752,6 +1752,7 @@ void sendLogicPageStreamed() {
     .block-script_end { background:#e9f5ef; border-left:6px solid #22a06b; }
     .block-script_start, .block-script_end { align-items:center; min-height:auto; }
     .block-script_start .block-label, .block-script_end .block-label { padding-top:0; }
+    .block-set_color .block-label { min-width:56px; }
     .drop-hint { border-top:3px solid #2f8eff; margin-top:-2px; }
     .canvas-empty { color:var(--muted); font-size:0.9rem; padding:8px; }
     .block-label { font-weight:700; font-size:0.88rem; min-width:84px; color:#1f2f49; padding-top:26px; }

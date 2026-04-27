@@ -2414,6 +2414,29 @@ void sendLogicPageStreamed() {
     return `<div class="field-inline"><label>${labelText}</label><div class="number-wrap"><input type="number" data-k="${key}" class="var-direct-input" value="${directValue}" min="0" max="30" step="0.5" style="width:60px"><span>s</span></div>${buildVariablePicker(key + '_var', 'duration', value)}</div>`;
   }
 
+  function defaultValueForVariableType(type) {
+    if (type === 'led_mask') {
+      return '1';
+    }
+    if (type === 'brightness') {
+      return '100';
+    }
+    if (type === 'duration') {
+      return '1';
+    }
+    if (type === 'color') {
+      return '#ff0000';
+    }
+    return '';
+  }
+
+  function placeholderForVariableType(type) {
+    if (type === 'color') {
+      return '#ff0000';
+    }
+    return defaultValueForVariableType(type);
+  }
+
   function buildLedTargetField(value) {
     const ledVariables = getVariablesByType('led_mask');
     const isVariableMode = isVariableReference(value) && ledVariables.length > 0;
@@ -2422,7 +2445,7 @@ void sendLogicPageStreamed() {
     const modeOptions = `<option value="fixed"${!isVariableMode ? ' selected' : ''}>fix</option><option value="var"${isVariableMode ? ' selected' : ''}>var</option>`;
     const fixedStyle = isVariableMode ? ' style="display:none"' : '';
     const variableStyle = isVariableMode ? '' : ' style="display:none"';
-    return `<div class="field-inline led-target-field"><label>LEDs</label><div class="field-stack compact" style="width:40%;"><select data-k="leds_mode" class="variable-picker"${modeDisabled}>${modeOptions}</select></div><div class="led-checklist" data-led-target="fixed"${fixedStyle}>${ledCheckboxes(directValue)}</div><div data-led-target="var"${variableStyle}>${buildVariablePicker('leds_var', 'led_mask', value)}</div></div>`;
+    return `<div class="field-inline led-target-field"><label>LEDs</label><div class="field-stack compact" style="width:16%;"><select data-k="leds_mode" class="variable-picker"${modeDisabled}>${modeOptions}</select></div><div class="led-checklist" data-led-target="fixed"${fixedStyle}>${ledCheckboxes(directValue)}</div><div data-led-target="var"${variableStyle}>${buildVariablePicker('leds_var', 'led_mask', value)}</div></div>`;
   }
 
   function updateLedTargetMode(field) {
@@ -2447,6 +2470,30 @@ void sendLogicPageStreamed() {
       modeSelect.dataset.bound = 'true';
       modeSelect.addEventListener('change', () => updateLedTargetMode(field));
       updateLedTargetMode(field);
+    });
+  }
+
+  function initSetVariableFields() {
+    document.querySelectorAll('.block-set_variable').forEach(block => {
+      const typeSelect = block.querySelector('[data-k="varType"]');
+      const valueInput = block.querySelector('[data-k="value"]');
+      if (!typeSelect || !valueInput) {
+        return;
+      }
+
+      const applyTypeDefaults = () => {
+        const nextType = typeSelect.value;
+        valueInput.value = defaultValueForVariableType(nextType);
+        valueInput.placeholder = placeholderForVariableType(nextType);
+      };
+
+      valueInput.placeholder = placeholderForVariableType(typeSelect.value);
+      if (typeSelect.dataset.bound === 'true') {
+        return;
+      }
+
+      typeSelect.dataset.bound = 'true';
+      typeSelect.addEventListener('change', applyTypeDefaults);
     });
   }
 
@@ -3134,7 +3181,7 @@ void sendLogicPageStreamed() {
       } else if (step.type === 'wait') {
         inner = `<span class="block-label">Warten</span>${buildDurationField('s', values.s, 'Dauer')}`;
       } else if (step.type === 'set_variable') {
-        inner = `<span class="block-label">Variable setzen</span><div class="field-inline"><label>Name</label><input type="text" data-k="name" value="${values.name}" maxlength="15"></div><div class="field-inline"><label>Typ</label><select data-k="varType"><option value="brightness"${values.varType === 'brightness' ? ' selected' : ''}>Helligkeit</option><option value="duration"${values.varType === 'duration' ? ' selected' : ''}>Dauer</option><option value="led_mask"${values.varType === 'led_mask' ? ' selected' : ''}>LED-Auswahl</option><option value="color"${values.varType === 'color' ? ' selected' : ''}>Farbe</option></select></div><div class="field-inline"><label>Wert</label><input type="text" data-k="value" value="${values.value}" placeholder="100 oder #FF0000"></div>`;
+        inner = `<span class="block-label">Variable setzen</span><div class="field-inline"><label>Name</label><input type="text" data-k="name" value="${values.name}" maxlength="15"></div><div class="field-inline"><label>Typ</label><select data-k="varType"><option value="brightness"${values.varType === 'brightness' ? ' selected' : ''}>Helligkeit</option><option value="duration"${values.varType === 'duration' ? ' selected' : ''}>Dauer</option><option value="led_mask"${values.varType === 'led_mask' ? ' selected' : ''}>LED-Auswahl</option><option value="color"${values.varType === 'color' ? ' selected' : ''}>Farbe</option></select></div><div class="field-inline"><label>Wert</label><input type="text" data-k="value" value="${values.value}" placeholder="${placeholderForVariableType(values.varType)}"></div>`;
       } else if (step.type === 'change_variable') {
         inner = `<span class="block-label">Variable ändern</span><div class="field-inline"><label>Name</label>${buildVariableNameSelect('name', values.name, ['brightness', 'duration', 'led_mask'])}</div><div class="field-inline"><label>Aktion</label><select data-k="op_type"><option value="add"${values.op_type === 'add' ? ' selected' : ''}>Addieren</option><option value="subtract"${values.op_type === 'subtract' ? ' selected' : ''}>Subtrahieren</option><option value="multiply"${values.op_type === 'multiply' ? ' selected' : ''}>Multiplizieren</option><option value="set"${values.op_type === 'set' ? ' selected' : ''}>Setzen</option></select></div><div class="field-inline"><label>Wert</label><input type="number" data-k="value" value="${values.value}" min="0" max="65535"></div>`;
       } else if (step.type === 'repeat_start') {
@@ -3173,6 +3220,7 @@ void sendLogicPageStreamed() {
 
     initAllColorWheels();
     initLedTargetFields();
+    initSetVariableFields();
     syncDragDropWithColorWheel();
     startLedPreviewPlayback();
   }

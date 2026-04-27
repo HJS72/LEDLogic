@@ -2400,18 +2400,31 @@ void sendLogicPageStreamed() {
     return rawValue || '#FF0000';
   }
 
+  function buildSourceModeSelect(key, isVariableMode, hasVariables) {
+    const modeDisabled = hasVariables ? '' : ' disabled';
+    return `<div class="field-stack compact" style="width:8%;min-width:52px;"><select data-k="${key}_mode" data-source-mode="true" class="variable-picker"${modeDisabled}><option value="fixed"${!isVariableMode ? ' selected' : ''}>fix</option><option value="var"${isVariableMode ? ' selected' : ''}>var</option></select></div>`;
+  }
+
+  function buildSourceModeField(key, labelText, variableType, currentValue, directMarkup) {
+    const variables = getVariablesByType(variableType);
+    const isVariableMode = isVariableReference(currentValue) && variables.length > 0;
+    const fixedStyle = isVariableMode ? ' style="display:none"' : '';
+    const variableStyle = isVariableMode ? '' : ' style="display:none"';
+    return `<div class="field-inline source-mode-field"><label>${labelText}</label>${buildSourceModeSelect(key, isVariableMode, variables.length > 0)}<div data-source-target="fixed"${fixedStyle}>${directMarkup}</div><div data-source-target="var"${variableStyle}>${buildVariablePicker(key + '_var', variableType, currentValue)}</div></div>`;
+  }
+
   function buildColorField(key, value) {
-    return `<div class="field-inline"><label>Farbe</label>${buildWheelControl(key, getColorDirectValue(value), '')}${buildVariablePicker(key + '_var', 'color', value)}</div>`;
+    return buildSourceModeField(key, 'Farbe', 'color', value, buildWheelControl(key, getColorDirectValue(value), ''));
   }
 
   function buildBrightnessField(key, value, labelText) {
     const directValue = isVariableReference(value) ? '100' : value;
-    return `<div class="field-inline"><label>${labelText}</label>${buildBrightnessSelect(key, directValue)}${buildVariablePicker(key + '_var', 'brightness', value)}</div>`;
+    return buildSourceModeField(key, labelText, 'brightness', value, buildBrightnessSelect(key, directValue));
   }
 
   function buildDurationField(key, value, labelText) {
     const directValue = isVariableReference(value) ? '1.0' : value;
-    return `<div class="field-inline"><label>${labelText}</label><div class="number-wrap"><input type="number" data-k="${key}" class="var-direct-input" value="${directValue}" min="0" max="30" step="0.5" style="width:60px"><span>s</span></div>${buildVariablePicker(key + '_var', 'duration', value)}</div>`;
+    return buildSourceModeField(key, labelText, 'duration', value, `<div class="number-wrap"><input type="number" data-k="${key}" class="var-direct-input" value="${directValue}" min="0" max="30" step="0.5" style="width:60px"><span>s</span></div>`);
   }
 
   function defaultValueForVariableType(type) {
@@ -2441,36 +2454,9 @@ void sendLogicPageStreamed() {
     const ledVariables = getVariablesByType('led_mask');
     const isVariableMode = isVariableReference(value) && ledVariables.length > 0;
     const directValue = isVariableReference(value) ? defaultLedsCsv() : value;
-    const modeDisabled = ledVariables.length === 0 ? ' disabled' : '';
-    const modeOptions = `<option value="fixed"${!isVariableMode ? ' selected' : ''}>fix</option><option value="var"${isVariableMode ? ' selected' : ''}>var</option>`;
     const fixedStyle = isVariableMode ? ' style="display:none"' : '';
     const variableStyle = isVariableMode ? '' : ' style="display:none"';
-    return `<div class="field-inline led-target-field"><label>LEDs</label><div class="field-stack compact" style="width:16%;"><select data-k="leds_mode" class="variable-picker"${modeDisabled}>${modeOptions}</select></div><div class="led-checklist" data-led-target="fixed"${fixedStyle}>${ledCheckboxes(directValue)}</div><div data-led-target="var"${variableStyle}>${buildVariablePicker('leds_var', 'led_mask', value)}</div></div>`;
-  }
-
-  function updateLedTargetMode(field) {
-    const modeSelect = field.querySelector('[data-k="leds_mode"]');
-    const fixedTarget = field.querySelector('[data-led-target="fixed"]');
-    const variableTarget = field.querySelector('[data-led-target="var"]');
-    if (!modeSelect || !fixedTarget || !variableTarget) {
-      return;
-    }
-    const useVariable = modeSelect.value === 'var';
-    fixedTarget.style.display = useVariable ? 'none' : '';
-    variableTarget.style.display = useVariable ? '' : 'none';
-  }
-
-  function initLedTargetFields() {
-    document.querySelectorAll('.led-target-field').forEach(field => {
-      const modeSelect = field.querySelector('[data-k="leds_mode"]');
-      if (!modeSelect || modeSelect.dataset.bound === 'true') {
-        updateLedTargetMode(field);
-        return;
-      }
-      modeSelect.dataset.bound = 'true';
-      modeSelect.addEventListener('change', () => updateLedTargetMode(field));
-      updateLedTargetMode(field);
-    });
+    return `<div class="field-inline source-mode-field"><label>LEDs</label>${buildSourceModeSelect('leds', isVariableMode, ledVariables.length > 0)}<div class="led-checklist" data-source-target="fixed"${fixedStyle}>${ledCheckboxes(directValue)}</div><div data-source-target="var"${variableStyle}>${buildVariablePicker('leds_var', 'led_mask', value)}</div></div>`;
   }
 
   function initSetVariableFields() {
@@ -2497,9 +2483,38 @@ void sendLogicPageStreamed() {
     });
   }
 
+  function updateSourceModeField(field) {
+    const modeSelect = field.querySelector('[data-source-mode="true"]');
+    const fixedTarget = field.querySelector('[data-source-target="fixed"]');
+    const variableTarget = field.querySelector('[data-source-target="var"]');
+    if (!modeSelect || !fixedTarget || !variableTarget) {
+      return;
+    }
+    const useVariable = modeSelect.value === 'var';
+    fixedTarget.style.display = useVariable ? 'none' : '';
+    variableTarget.style.display = useVariable ? '' : 'none';
+  }
+
+  function initSourceModeFields() {
+    document.querySelectorAll('.source-mode-field').forEach(field => {
+      const modeSelect = field.querySelector('[data-source-mode="true"]');
+      if (!modeSelect) {
+        return;
+      }
+      if (modeSelect.dataset.bound === 'true') {
+        updateSourceModeField(field);
+        return;
+      }
+      modeSelect.dataset.bound = 'true';
+      modeSelect.addEventListener('change', () => updateSourceModeField(field));
+      updateSourceModeField(field);
+    });
+  }
+
   function resolveBlockValue(el, key, fallback) {
+    const modeField = el.querySelector(`[data-k="${key}_mode"]`);
     const variableField = el.querySelector(`[data-k="${key}_var"]`);
-    if (variableField && variableField.value) {
+    if (modeField && modeField.value === 'var' && variableField && variableField.value) {
       return '$' + variableField.value;
     }
     const field = el.querySelector(`[data-k="${key}"]`);
@@ -3219,7 +3234,7 @@ void sendLogicPageStreamed() {
     }
 
     initAllColorWheels();
-    initLedTargetFields();
+    initSourceModeFields();
     initSetVariableFields();
     syncDragDropWithColorWheel();
     startLedPreviewPlayback();

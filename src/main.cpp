@@ -2309,6 +2309,25 @@ void sendLogicPageStreamed() {
     return `<div class="field-stack compact"><label>Variable</label><select data-k="${key}" class="variable-picker">${options}</select></div>`;
   }
 
+  function buildVariableNameSelect(key, currentValue, allowedTypes) {
+    const types = Array.isArray(allowedTypes) ? allowedTypes : [];
+    const filteredVariables = currentVariables.filter(variable => types.length === 0 || types.includes(variable.type));
+    let options = '';
+
+    filteredVariables.forEach(variable => {
+      const selected = variable.name === currentValue ? ' selected' : '';
+      options += `<option value="${escapeHtml(variable.name)}"${selected}>$${escapeHtml(variable.name)} (${escapeHtml(variable.type)})</option>`;
+    });
+
+    if (!options) {
+      options = '<option value="">Keine Variablen vorhanden</option>';
+    } else if (currentValue && !filteredVariables.some(variable => variable.name === currentValue)) {
+      options += `<option value="${escapeHtml(currentValue)}" selected>${escapeHtml(currentValue)} (nicht gefunden)</option>`;
+    }
+
+    return `<select data-k="${key}" class="variable-picker">${options}</select>`;
+  }
+
   function getColorDirectValue(rawValue) {
     if (isVariableReference(rawValue)) {
       const variable = currentVariables.find(entry => entry.name === getVariableReferenceName(rawValue) && entry.type === 'color');
@@ -3019,7 +3038,7 @@ void sendLogicPageStreamed() {
       } else if (step.type === 'set_variable') {
         inner = `<span class="block-label">Variable setzen</span><div class="field-inline"><label>Name</label><input type="text" data-k="name" value="${values.name}" maxlength="15"></div><div class="field-inline"><label>Typ</label><select data-k="varType"><option value="brightness"${values.varType === 'brightness' ? ' selected' : ''}>Helligkeit</option><option value="duration"${values.varType === 'duration' ? ' selected' : ''}>Dauer</option><option value="led_mask"${values.varType === 'led_mask' ? ' selected' : ''}>LED-Auswahl</option><option value="color"${values.varType === 'color' ? ' selected' : ''}>Farbe</option></select></div><div class="field-inline"><label>Wert</label><input type="text" data-k="value" value="${values.value}" placeholder="100 oder #FF0000"></div>`;
       } else if (step.type === 'change_variable') {
-        inner = `<span class="block-label">Variable ändern</span><div class="field-inline"><label>Name</label><input type="text" data-k="name" value="${values.name}" maxlength="15"></div><div class="field-inline"><label>Aktion</label><select data-k="op_type"><option value="add"${values.op_type === 'add' ? ' selected' : ''}>Addieren</option><option value="subtract"${values.op_type === 'subtract' ? ' selected' : ''}>Subtrahieren</option><option value="multiply"${values.op_type === 'multiply' ? ' selected' : ''}>Multiplizieren</option><option value="set"${values.op_type === 'set' ? ' selected' : ''}>Setzen</option></select></div><div class="field-inline"><label>Wert</label><input type="number" data-k="value" value="${values.value}" min="0" max="65535"></div>`;
+        inner = `<span class="block-label">Variable ändern</span><div class="field-inline"><label>Name</label>${buildVariableNameSelect('name', values.name, ['brightness', 'duration', 'led_mask'])}</div><div class="field-inline"><label>Aktion</label><select data-k="op_type"><option value="add"${values.op_type === 'add' ? ' selected' : ''}>Addieren</option><option value="subtract"${values.op_type === 'subtract' ? ' selected' : ''}>Subtrahieren</option><option value="multiply"${values.op_type === 'multiply' ? ' selected' : ''}>Multiplizieren</option><option value="set"${values.op_type === 'set' ? ' selected' : ''}>Setzen</option></select></div><div class="field-inline"><label>Wert</label><input type="number" data-k="value" value="${values.value}" min="0" max="65535"></div>`;
       } else if (step.type === 'repeat_start') {
         inner = `<span class="block-label">Wiederholen</span><div class="field-inline"><label>Wiederhole</label><div class="number-wrap"><input type="number" data-k="count" value="${values.count}" min="1" max="16" step="1" style="width:60px"><span>mal</span></div></div><span class="inline-note">ab hier bis Wiederholen Ende</span>`;
       } else if (step.type === 'repeat_end') {

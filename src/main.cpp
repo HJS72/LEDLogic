@@ -1964,6 +1964,15 @@ void sendLogicPageStreamed() {
   let ledSimulatorRunning = false;
   let loadOverlayScriptNames = [];
 
+  function escapeHtml(value) {
+    return String(value || '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;');
+  }
+
   function syncToolbarStates() {
     const startButton = document.getElementById('startScriptBtn');
     const stopButton = document.getElementById('stopScriptBtn');
@@ -2506,8 +2515,10 @@ void sendLogicPageStreamed() {
     const type = el.dataset.type;
     const values = readBlockValues(id, type);
     const step = { op: type };
-    const selectedLeds = readSelectedLeds(el);
-    const ledsCsv = selectedLeds.join(',');
+    const ledSource = values && values.leds ? values.leds : '0';
+    const usesLedVariable = isVariableReference(ledSource);
+    const selectedLeds = usesLedVariable ? [0] : normalizeLedCsv(ledSource);
+    const ledsCsv = usesLedVariable ? ledSource : selectedLeds.join(',');
     if (type === 'set_color') {
       step.op = 'set';
       step.led = selectedLeds[0];

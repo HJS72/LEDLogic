@@ -3045,6 +3045,34 @@ String buildConfigPage() {
     .link { color:#0f5bbf; font-weight:700; text-decoration:none; }
     .config-title { display:flex; align-items:center; gap:10px; }
     .config-title-icon { width:84px; height:84px; flex:0 0 auto; overflow:visible; }
+    /* V2 Variables UI Styles */
+    .variables-list { background: #f9f7fc; border-radius: 12px; padding: 16px; margin-bottom: 20px; }
+    .variable-item { display:flex; align-items:center; justify-content:space-between; padding:12px; background:#fff; border:1px solid #ddd0f0; border-radius:8px; margin-bottom:8px; }
+    .variable-item-info { flex:1; }
+    .variable-name { font-weight:700; color:#1a1030; font-family:monospace; }
+    .variable-type { font-size:0.9rem; color:#6d5a84; }
+    .variable-value { background:#f2eaff; padding:4px 8px; border-radius:4px; font-family:monospace; font-size:0.9rem; }
+    .variable-item-actions { display:flex; gap:6px; }
+    .variable-item-actions button { padding:6px 10px; font-size:0.85rem; border:1px solid #ddd0f0; background:#fff; border-radius:6px; cursor:pointer; color:#6d5a84; }
+    .variable-item-actions button:hover { background:#f2eaff; }
+    .variable-creation-panel { background:#f9f7fc; border:2px dashed #9b3db8; border-radius:12px; padding:16px; }
+    .led-strip-preview { display:flex; gap:6px; margin:10px 0; flex-wrap:wrap; }
+    .led { width:32px; height:32px; border-radius:4px; cursor:pointer; border:2px solid #ddd0f0; background:#fff; transition:all 0.2s; }
+    .led:hover { transform:scale(1.1); }
+    .led.selected { border-color:#9b3db8; background:#9b3db8; box-shadow:0 0 12px rgba(155,61,184,0.4); }
+    .led-actions { display:flex; gap:8px; margin-top:10px; }
+    .led-actions button { flex:1; padding:8px 12px; font-size:0.9rem; background:linear-gradient(135deg,#8d5f18,#bd8528); color:#fff; border:0; border-radius:8px; cursor:pointer; font-weight:600; }
+    .brightness-slider-container { display:flex; align-items:center; gap:10px; margin:10px 0; }
+    .brightness-slider-container input[type="range"] { flex:1; width:auto; }
+    .value-display { min-width:40px; text-align:right; font-weight:700; color:#9b3db8; }
+    .quick-presets { display:flex; gap:6px; flex-wrap:wrap; margin:10px 0; }
+    .quick-presets button { flex:0 1 auto; padding:8px 12px; font-size:0.9rem; background:#f2eaff; color:#9b3db8; border:1px solid #9b3db8; border-radius:6px; cursor:pointer; font-weight:600; }
+    .quick-presets button:hover { background:#9b3db8; color:#fff; }
+    .duration-input-group { display:flex; align-items:center; gap:8px; margin:10px 0; }
+    .duration-input-group input { width:80px; margin:0; }
+    .duration-input-group span { color:#6d5a84; font-weight:600; }
+    .color-input-group { display:flex; align-items:center; gap:10px; margin:10px 0; }
+    .color-input-group input[type="color"] { width:60px; height:40px; border-radius:6px; cursor:pointer; margin:0; }
     @media (max-width: 860px) { .layout { grid-template-columns:1fr; } }
   </style>
 </head>
@@ -3147,6 +3175,38 @@ String buildConfigPage() {
   page += htmlEscape(otaUploadResult.isEmpty() ? String("-") : otaUploadResult);
   page += R"HTML(</p>
       </article>
+    </section>
+
+    <section class="panel">
+      <h2>🔧 Variablen-Management (V2)</h2>
+      
+      <div class="variables-list">
+        <h4>Definierte Variablen</h4>
+        <div id="variablesContainer" style="display:grid; gap:10px;">
+          <div style="color:#6d5a84; font-style:italic;">Noch keine Variablen definiert.</div>
+        </div>
+      </div>
+
+      <div class="variable-creation-panel">
+        <h4>Neue Variable erstellen</h4>
+        
+        <label>Variablenname</label>
+        <input type="text" id="varName" placeholder="z.B. 'my_brightness'" maxlength="15" style="margin-bottom:10px;">
+        
+        <label>Variable Typ</label>
+        <select id="varType" onchange="updateVariableInput()" style="margin-bottom:10px;">
+          <option value="brightness">Helligkeit (0-255)</option>
+          <option value="duration">Dauer (ms)</option>
+          <option value="led_mask">LED-Auswahl</option>
+          <option value="color">Farbe (RGB)</option>
+        </select>
+        
+        <div id="varInputContainer" style="margin:10px 0;">
+          <!-- Dynamisch aktualisiert -->
+        </div>
+        
+        <button class="primary" onclick="createVariable()" style="margin-top:10px;">Variable erstellen</button>
+      </div>
     </section>
 
     <section class="panel">
@@ -3260,11 +3320,193 @@ String buildConfigPage() {
       });
     }
 
+    // V2 Variables UI Functions
+    function updateVariableInput() {
+      const varType = document.getElementById('varType').value;
+      const container = document.getElementById('varInputContainer');
+      let html = '';
+      
+      switch(varType) {
+        case 'brightness':
+          html = `<label>Helligkeit (0-255)</label>
+            <div class="brightness-slider-container">
+              <input type="range" id="varValueSlider" min="0" max="255" value="128" 
+                     oninput="document.getElementById('varValueDisplay').textContent = this.value">
+              <span id="varValueDisplay" class="value-display">128</span>
+            </div>
+            <div class="quick-presets">
+              <button onclick="setVariableBrightness(0)">0%</button>
+              <button onclick="setVariableBrightness(128)">50%</button>
+              <button onclick="setVariableBrightness(200)">80%</button>
+              <button onclick="setVariableBrightness(255)">100%</button>
+            </div>`;
+          break;
+        
+        case 'duration':
+          html = `<label>Dauer</label>
+            <div class="duration-input-group">
+              <input type="number" id="varDurationSec" min="0" max="30" value="1" placeholder="0">
+              <span>s</span>
+              <input type="number" id="varDurationMs" min="0" max="999" value="0" placeholder="0">
+              <span>ms</span>
+            </div>
+            <div class="quick-presets">
+              <button onclick="setVariableDuration(100)">100ms</button>
+              <button onclick="setVariableDuration(500)">500ms</button>
+              <button onclick="setVariableDuration(1000)">1s</button>
+              <button onclick="setVariableDuration(2000)">2s</button>
+              <button onclick="setVariableDuration(5000)">5s</button>
+            </div>`;
+          break;
+        
+        case 'led_mask':
+          html = `<label>LEDs auswählen</label>
+            <div class="led-strip-preview" id="ledStripPreview">` +
+              Array.from({length: 12}, (_, i) => 
+                `<div class="led" data-index="${i}" onclick="toggleLED(${i})"></div>`
+              ).join('') +
+            `</div>
+            <div class="led-actions">
+              <button onclick="selectAllLEDs()" type="button">Alle</button>
+              <button onclick="selectNoLEDs()" type="button">Keine</button>
+            </div>`;
+          break;
+        
+        case 'color':
+          html = `<label>Farbe (RGB)</label>
+            <div class="color-input-group">
+              <input type="color" id="varColorPicker" value="#ff0000" 
+                     oninput="document.getElementById('varColorHex').value = this.value">
+              <input type="text" id="varColorHex" value="#ff0000" maxlength="7" style="margin:0;">
+            </div>`;
+          break;
+      }
+      
+      container.innerHTML = html;
+    }
+
+    function setVariableBrightness(value) {
+      document.getElementById('varValueSlider').value = value;
+      document.getElementById('varValueDisplay').textContent = value;
+    }
+
+    function setVariableDuration(ms) {
+      const sec = Math.floor(ms / 1000);
+      const msPart = ms % 1000;
+      document.getElementById('varDurationSec').value = sec;
+      document.getElementById('varDurationMs').value = msPart;
+    }
+
+    function toggleLED(index) {
+      const led = document.querySelector(`[data-index="${index}"]`);
+      if (led) led.classList.toggle('selected');
+    }
+
+    function selectAllLEDs() {
+      document.querySelectorAll('[data-index]').forEach(led => led.classList.add('selected'));
+    }
+
+    function selectNoLEDs() {
+      document.querySelectorAll('[data-index]').forEach(led => led.classList.remove('selected'));
+    }
+
+    function getLEDMask() {
+      let mask = 0;
+      document.querySelectorAll('[data-index].selected').forEach(led => {
+        const index = parseInt(led.dataset.index);
+        mask |= (1 << index);
+      });
+      return mask;
+    }
+
+    function createVariable() {
+      const name = document.getElementById('varName').value.trim();
+      const type = document.getElementById('varType').value;
+      
+      if (!name) {
+        alert('Variablenname erforderlich');
+        return;
+      }
+      
+      let value = 0;
+      let r = 0, g = 0, b = 0;
+      
+      switch(type) {
+        case 'brightness':
+          value = parseInt(document.getElementById('varValueSlider').value);
+          break;
+        case 'duration':
+          const sec = parseInt(document.getElementById('varDurationSec').value) || 0;
+          const ms = parseInt(document.getElementById('varDurationMs').value) || 0;
+          value = sec * 1000 + ms;
+          break;
+        case 'led_mask':
+          value = getLEDMask();
+          break;
+        case 'color':
+          const hex = document.getElementById('varColorPicker').value;
+          r = parseInt(hex.substring(1, 3), 16);
+          g = parseInt(hex.substring(3, 5), 16);
+          b = parseInt(hex.substring(5, 7), 16);
+          break;
+      }
+      
+      addVariableToDisplay(name, type, value, r, g, b);
+      document.getElementById('varName').value = '';
+      updateVariableInput();
+    }
+
+    function addVariableToDisplay(name, type, value, r, g, b) {
+      const container = document.getElementById('variablesContainer');
+      
+      let displayValue = '';
+      switch(type) {
+        case 'brightness': displayValue = `${value}/255`; break;
+        case 'duration': displayValue = `${value}ms`; break;
+        case 'led_mask': displayValue = `mask:${value}`; break;
+        case 'color': displayValue = `RGB(${r},${g},${b})`; break;
+      }
+      
+      // Clear placeholder if this is first item
+      if (container.querySelector('[style*="font-style"]')) {
+        container.innerHTML = '';
+      }
+      
+      const item = document.createElement('div');
+      item.className = 'variable-item';
+      item.innerHTML = `
+        <div class="variable-item-info">
+          <div class="variable-name">$${name}</div>
+          <div class="variable-type">${type}</div>
+        </div>
+        <div class="variable-value">${displayValue}</div>
+        <div class="variable-item-actions">
+          <button onclick="editVariable('${name}')" type="button">✏️</button>
+          <button onclick="deleteVariable('${name}')" type="button">🗑️</button>
+        </div>
+      `;
+      
+      container.appendChild(item);
+    }
+
+    function editVariable(name) {
+      alert(`Edit für "${name}" - wird implementiert`);
+    }
+
+    function deleteVariable(name) {
+      if (confirm(`Variable "${name}" löschen?`)) {
+        alert(`"${name}" gelöscht - wird implementiert`);
+      }
+    }
+
     document.getElementById('scan-trigger').addEventListener('click', refreshScan);
     setupPasswordToggle();
     setupOtaCheck();
     refreshStatus();
     setInterval(refreshStatus, 3000);
+
+    // V2 Variables UI Initialization
+    updateVariableInput();
   </script>
 </body>
 </html>)HTML";

@@ -2454,6 +2454,33 @@ void sendLogicPageStreamed() {
     return defaultValueForVariableType(type);
   }
 
+  function ledMaskFromSelectionValue(rawValue) {
+    let mask = 0;
+    String(rawValue || '')
+      .split(',')
+      .map(token => token.trim())
+      .filter(token => token !== '')
+      .forEach(token => {
+        const ledNumber = Number.parseInt(token, 10);
+        if (!Number.isInteger(ledNumber) || ledNumber < 1 || ledNumber > MAX_LEDS) {
+          return;
+        }
+        mask |= (1 << (ledNumber - 1));
+      });
+    return mask || 1;
+  }
+
+  function ledSelectionValueFromMask(maskValue) {
+    const numericMask = Number.parseInt(maskValue, 10) || 0;
+    const selections = [];
+    for (let index = 0; index < MAX_LEDS; index += 1) {
+      if (numericMask & (1 << index)) {
+        selections.push(String(index + 1));
+      }
+    }
+    return selections.length ? selections.join(',') : '1';
+  }
+
   function buildLedTargetField(value) {
     const ledVariables = getVariablesByType('led_mask');
     const isVariableMode = isVariableReference(value) && ledVariables.length > 0;
@@ -2696,7 +2723,9 @@ void sendLogicPageStreamed() {
       step.op = 'set_var';
       step.name = values.name;
       step.type = values.varType;
-      step.value = values.value;
+      step.value = values.varType === 'led_mask'
+        ? String(ledMaskFromSelectionValue(values.value))
+        : values.value;
     } else if (type === 'change_variable') {
       step.op = 'change_var';
       step.name = values.name;
@@ -3540,7 +3569,17 @@ void sendLogicPageStreamed() {
       } else if (op.op === 'wait') {
         result.push({ id, type: 'wait', values: { s: String(op.s != null ? op.s : 1) } });
       } else if (op.op === 'set_var') {
-        result.push({ id, type: 'set_variable', values: { name: op.name || 'var_name', varType: op.type || 'brightness', value: String(op.value != null ? op.value : 0) } });
+        result.push({
+          id,
+          type: 'set_variable',
+          values: {
+            name: op.name || 'var_name',
+            varType: op.type || 'brightness',
+            value: op.type === 'led_mask'
+              ? ledSelectionValueFromMask(op.value)
+              : String(op.value != null ? op.value : 0)
+          }
+        });
       } else if (op.op === 'change_var') {
         result.push({ id, type: 'change_variable', values: { name: op.name || 'var_name', op_type: op.op_type || 'add', value: String(op.value != null ? op.value : 0) } });
       } else if (op.op === 'all_off') {

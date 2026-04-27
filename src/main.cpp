@@ -1963,6 +1963,7 @@ void sendLogicPageStreamed() {
   let ledPreviewRunId = 0;
   let ledSimulatorRunning = false;
   let loadOverlayScriptNames = [];
+  let currentVariables = [];
 
   function escapeHtml(value) {
     return String(value || '')
@@ -1983,6 +1984,23 @@ void sendLogicPageStreamed() {
     stopButton.classList.toggle('toggle-active', !ledSimulatorRunning);
     startButton.setAttribute('aria-pressed', ledSimulatorRunning ? 'true' : 'false');
     stopButton.setAttribute('aria-pressed', ledSimulatorRunning ? 'false' : 'true');
+  }
+
+  function refreshLogicVariables() {
+    fetch('/variables')
+      .then(response => {
+        if (!response.ok) {
+          throw new Error('variables fetch failed');
+        }
+        return response.json();
+      })
+      .then(data => {
+        currentVariables = Array.isArray(data.variables) ? data.variables : [];
+        renderList();
+      })
+      .catch(() => {
+        currentVariables = [];
+      });
   }
 
   function hexToRgb(hex) {
@@ -3454,6 +3472,7 @@ void sendLogicPageStreamed() {
   syncToolbarStates();
   setupToolboxDnD();
   renderList();
+  refreshLogicVariables();
   loadActiveScriptFromDevice();
 </script>
 </body>

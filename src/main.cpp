@@ -1764,6 +1764,8 @@ void sendLogicPageStreamed() {
     .field-stack.compact { gap:6px; min-width:120px; }
     .field-stack.compact label { margin:0; }
     .variable-picker { min-width:118px; max-width:160px; }
+    .source-mode-select-wrap { width:5%; min-width:0; flex:0 0 auto; }
+    .source-mode-select { min-width:0; width:100%; max-width:none; padding:7px 6px; text-align:center; }
     .field-inline input.var-direct-input { width:96px; }
     .number-wrap { display:flex; align-items:center; gap:6px; }
     .block-actions { margin-left:auto; display:flex; align-items:center; gap:4px; }
@@ -2402,7 +2404,7 @@ void sendLogicPageStreamed() {
 
   function buildSourceModeSelect(key, isVariableMode, hasVariables) {
     const modeDisabled = hasVariables ? '' : ' disabled';
-    return `<div class="field-stack compact" style="width:8%;min-width:52px;"><select data-k="${key}_mode" data-source-mode="true" class="variable-picker"${modeDisabled}><option value="fixed"${!isVariableMode ? ' selected' : ''}>fix</option><option value="var"${isVariableMode ? ' selected' : ''}>var</option></select></div>`;
+    return `<div class="source-mode-select-wrap"><select data-k="${key}_mode" data-source-mode="true" class="source-mode-select"${modeDisabled}><option value="fixed"${!isVariableMode ? ' selected' : ''}>fix</option><option value="var"${isVariableMode ? ' selected' : ''}>var</option></select></div>`;
   }
 
   function buildSourceModeField(key, labelText, variableType, currentValue, directMarkup) {

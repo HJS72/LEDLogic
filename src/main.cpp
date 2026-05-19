@@ -2005,19 +2005,16 @@ void sendLogicPageStreamed() {
           <div class="toolbox-setup-title">Setup</div>
           <div class="toolbox-setup-row">
             <label for="ledCountSelect" style="margin:0;">LED Anzahl</label>
-            <select id="ledCountSelect">
-              <option value="1">1</option>
-              <option value="2">2</option>
-              <option value="3">3</option>
-              <option value="4">4</option>
-              <option value="5">5</option>
-              <option value="6">6</option>
-              <option value="7">7</option>
-              <option value="8">8</option>
-              <option value="9">9</option>
-              <option value="10">10</option>
-              <option value="11">11</option>
-              <option value="12">12</option>
+            <select id="ledCountSelect">)HTML");
+  for (uint8_t option = kLedMinCount; option <= kLedMaxCount; ++option) {
+    String opt = "<option value=\"" + String(option) + "\"";
+    if (option == ledCount) {
+      opt += " selected";
+    }
+    opt += ">" + String(option) + "</option>";
+    webServer.sendContent(opt);
+  }
+  sendChunked(R"HTML(
             </select>
             <button type="button" class="secondary setup-save-icon" onclick="saveLedCount()" title="Übernehmen" aria-label="Übernehmen"><img src=")HTML");
   webServer.sendContent(kSetupSaveIconUrl);
@@ -2059,13 +2056,8 @@ void sendLogicPageStreamed() {
   </div>
 </div>
 
-<div id="led-config-meta" data-led-count=")HTML");
-  webServer.sendContent("\"");
-  webServer.sendContent(String(ledCount));
-  webServer.sendContent(R"HTML(" hidden></div>
-
 <script>
-  const MAX_LEDS = Number.parseInt((document.getElementById('led-config-meta') || {}).dataset?.ledCount || '1', 10) || 1;
+  const MAX_LEDS = Number.parseInt((document.getElementById('ledCountSelect') || {}).value || '1', 10) || 1;
   const CURRENT_LED_COUNT = MAX_LEDS;
   let steps = [];
   let scriptLoopEnabled = false;

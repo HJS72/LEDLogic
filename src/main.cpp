@@ -1773,13 +1773,14 @@ void sendLogicPageStreamed() {
       .setup-save-icon { width:36px; height:36px; padding:0 !important; display:flex; align-items:center; justify-content:center; line-height:0; }
       .setup-save-icon img { width:24px; height:24px; display:block; object-fit:contain; }
     .toolbox h3 { margin:0 0 4px; font-size:1rem; }
-    .tool-item { border:1px solid rgba(20,32,51,0.12); border-left-width:6px; border-radius:10px; padding:10px 10px; font-weight:700; cursor:grab; user-select:none; }
+    .tool-item { border:1px solid rgba(20,32,51,0.12); border-left-width:6px; border-radius:10px; padding:10px 10px; font-weight:700; cursor:grab; user-select:none; touch-action:none; }
     .tool-item:active { cursor:grabbing; }
     .script-canvas { border:1px dashed #b8c6de; border-radius:14px; background:#fbfdff; padding:10px; min-height:220px; }
     .script-list { display:grid; gap:6px; margin:0; }
     .block { display:flex; gap:5px; align-items:flex-start; flex-wrap:wrap; border:1px solid var(--line); border-radius:10px; padding:8px 10px; box-shadow:0 1px 0 rgba(20,32,51,0.05); }
     .block:active { cursor:grabbing; }
-    .block-action { cursor:grab; align-items:center; }
+    .block-action { cursor:grab; align-items:center; touch-action:none; }
+    .block-action input, .block-action select, .block-action button, .block-action label { touch-action:auto; }
     .block-action .block-label { padding-top:0; }
     .block-set_color, .tool-set_color,
     .block-set_brightness, .tool-set_brightness,
@@ -3243,12 +3244,14 @@ void sendLogicPageStreamed() {
     function attachTouchSource(el, payloadFn) {
       el.addEventListener('touchstart', evt => {
         if (!dragDropEnabled) return;
+        // Don't intercept taps on interactive children (inputs, selects, buttons)
+        const tag = evt.target.tagName;
+        if (tag === 'INPUT' || tag === 'SELECT' || tag === 'BUTTON' || tag === 'LABEL') return;
+        evt.preventDefault(); // must be called before iOS starts a scroll gesture
         const touch = evt.touches[0];
         touchDragPayload = payloadFn();
         touchGhost = createTouchGhost(el, touch.clientX, touch.clientY);
-        // suppress scrolling while dragging
-        document.body.style.overflow = 'hidden';
-      }, { passive: true });
+      }, { passive: false });
     }
 
     // ── Toolbox items ──────────────────────────────────────────────────────
@@ -3279,7 +3282,6 @@ void sendLogicPageStreamed() {
     // ── Global touchend: perform drop ─────────────────────────────────────
     document.addEventListener('touchend', evt => {
       if (!touchDragPayload) return;
-      document.body.style.overflow = '';
       removeTouchGhost();
       const touch = evt.changedTouches[0];
       const canvas = document.getElementById('scriptCanvas');
@@ -3311,7 +3313,6 @@ void sendLogicPageStreamed() {
 
     // ── Cancel on touchcancel ─────────────────────────────────────────────
     document.addEventListener('touchcancel', () => {
-      document.body.style.overflow = '';
       removeTouchGhost();
       touchDragPayload = null;
       clearDropHints();
@@ -3322,11 +3323,13 @@ void sendLogicPageStreamed() {
   function attachBlockTouchSource(div, stepId) {
     div.addEventListener('touchstart', evt => {
       if (!dragDropEnabled) return;
+      const tag = evt.target.tagName;
+      if (tag === 'INPUT' || tag === 'SELECT' || tag === 'BUTTON' || tag === 'LABEL') return;
+      evt.preventDefault();
       const touch = evt.touches[0];
       touchDragPayload = { source: 'block', id: stepId };
       touchGhost = createTouchGhost(div, touch.clientX, touch.clientY);
-      document.body.style.overflow = 'hidden';
-    }, { passive: true });
+    }, { passive: false });
   }
   // ─────────────────────────────────────────────────────────────────────────
 

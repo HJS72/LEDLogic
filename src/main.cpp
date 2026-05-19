@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <DNSServer.h>
+#include <ESPmDNS.h>
 #include <HTTPClient.h>
 #include <LittleFS.h>
 #include <Preferences.h>
@@ -102,6 +103,7 @@ WebServer webServer(80);
 Preferences preferences;
 String configuredSsid;
 String configuredPassword;
+String configuredHostname;
 String statusLog[kStatusLogCapacity];
 size_t statusLogCount = 0;
 size_t statusLogHead = 0;
@@ -1428,9 +1430,13 @@ void saveLedConfig() {
 
 void loadCredentials() {
   preferences.begin(kPreferencesNamespace, true);
-  configuredSsid = preferences.getString("ssid", "");
-  configuredPassword = preferences.getString("password", "");
+  configuredSsid      = preferences.getString("ssid",      "");
+  configuredPassword  = preferences.getString("password",  "");
+  configuredHostname  = preferences.getString("hostname",  "");
   preferences.end();
+  if (configuredHostname.isEmpty()) {
+    configuredHostname = kDeviceHostname;
+  }
 
   if (configuredSsid.isEmpty()) {
     appendLog("Keine gespeicherte SSID gefunden.");
@@ -4007,6 +4013,22 @@ String buildConfigPage() {
   page += R"HTML(</strong><br>AP Passwort: <strong>)HTML";
   page += htmlEscape(kAccessPointPassword);
   page += R"HTML(</strong></p>
+
+        <hr style="border:none;border-top:1px solid var(--line);margin:12px 0;">
+        <h3 style="margin:0 0 10px;">Hostname / mDNS</h3>
+        <p class="tiny">Ger&auml;t erreichbar als <strong id="mdns-addr">)HTML";
+  page += htmlEscape(configuredHostname);
+  page += R"HTML(.local</strong></p>
+        <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;">
+          <div style="flex:1;min-width:160px;">
+            <label for="hostname-input">Hostname (a&ndash;z, 0&ndash;9, Bindestrich)</label>
+            <input id="hostname-input" maxlength="32" placeholder="ledlogic" value=")HTML";
+  page += htmlEscape(configuredHostname);
+  page += R"HTML(">
+          </div>
+          <button class="primary" type="button" id="hostname-save-btn" style="flex-shrink:0;align-self:flex-end;">Speichern</button>
+        </div>
+        <p class="tiny" id="hostname-msg" style="margin-top:6px;min-height:1em;"></p>
       </article>
 
       <article class="panel">
@@ -4477,6 +4499,7 @@ String buildConfigPage() {
     setupOtaCheck();
     setupOtaUpdateUrl();
     refreshStatus();
+    setupHostnameSave();
     setInterval(refreshStatus, 3000);
 
     // V2 Variables UI Initialization
@@ -4484,6 +4507,38 @@ String buildConfigPage() {
     refreshVariables();
 
     function setupOtaUpdateUrl() {
+          function setupHostnameSave() {
+            const btn  = document.getElementById('hostname-save-btn');
+            const inp  = document.getElementById('hostname-input');
+            const msg  = document.getElementById('hostname-msg');
+            const addr = document.getElementById('mdns-addr');
+            if (!btn) return;
+            btn.addEventListener('click', async () => {
+              const name = inp.value.trim();
+              if (!name) { msg.textContent = 'Bitte einen Hostnamen eingeben.'; return; }
+              btn.disabled = true;
+              msg.textContent = 'Wird gespeichert\u2026';
+              try {
+                const resp = await fetch('/hostname/save', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                  body: 'hostname=' + encodeURIComponent(name)
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (resp.ok) {
+                  msg.textContent = 'Gespeichert. Neuer mDNS-Name: ' + data.hostname + '.local';
+                  if (addr) addr.textContent = data.hostname + '.local';
+                  inp.value = data.hostname;
+                } else {
+                  msg.textContent = 'Fehler: ' + (data.error || resp.statusText);
+                }
+              } catch (e) {
+                msg.textContent = 'Verbindungsfehler.';
+              }
+              btn.disabled = false;
+            });
+          }
+
       const form = document.querySelector('form[action="/ota/update_url"]');
       if (!form) return;
       form.addEventListener('submit', async evt => {
@@ -4628,7 +4683,7 @@ void handleScan() {
 }
 
 void handleSave() {
-  const String ssid = webServer.arg("ssid");
+  const String ssid     = webServer.arg("ssid");
   const String password = webServer.arg("password");
 
   if (ssid.isEmpty()) {
@@ -4643,6 +4698,32 @@ void handleSave() {
     startAccessPoint();
   }
   sendPortalRedirect();
+}
+
+void handleHostnameSave() {
+  String name = webServer.arg("hostname");
+  name.trim();
+  // Sanitize: only a-z, 0-9, hyphen; max 32 chars
+  String sanitized;
+  sanitized.reserve(name.length());
+  for (char c : name) {
+    if (isalnum(c) || c == '-') {
+      sanitized += tolower(c);
+    }
+  }
+  if (sanitized.isEmpty() || sanitized.length() > 32) {
+    webServer.send(400, "application/json", "{\"error\":\"Ung\\u00fcltiger Hostname (a-z, 0-9, Bindestrich, max 32 Zeichen)\"}");
+    return;
+  }
+  configuredHostname = sanitized;
+  preferences.begin(kPreferencesNamespace, false);
+  preferences.putString("hostname", configuredHostname);
+  preferences.end();
+  WiFi.setHostname(configuredHostname.c_str());
+  MDNS.end();
+  MDNS.begin(configuredHostname.c_str());
+  appendLog("Hostname geändert: " + configuredHostname);
+  webServer.send(200, "application/json", "{\"hostname\":\"" + configuredHostname + "\"}");
 }
 
 void handleClear() {
@@ -5147,6 +5228,7 @@ void configureWebServer() {
   webServer.on("/status", HTTP_GET, handleStatus);
   webServer.on("/scan", HTTP_GET, handleScan);
   webServer.on("/save", HTTP_POST, handleSave);
+  webServer.on("/hostname/save", HTTP_POST, handleHostnameSave);
   webServer.on("/clear", HTTP_POST, handleClear);
   webServer.on("/led/preview", HTTP_POST, handleLedPreview);
   webServer.on("/led/preview/clear", HTTP_POST, handleLedPreviewClear);
@@ -5223,11 +5305,12 @@ void setup() {
   }
 
   WiFi.mode(WIFI_AP_STA);
-  WiFi.setHostname(kDeviceHostname);
   WiFi.onEvent(handleWifiEvent);
   WiFi.setSleep(false);
 
   loadCredentials();
+  WiFi.setHostname(configuredHostname.c_str());
+  MDNS.begin(configuredHostname.c_str());
   applyLedState();  // show all-off before loading config
   loadLedConfig();
   resetAnimationStartTimes(ledAnimationStartMs);

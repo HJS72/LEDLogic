@@ -917,7 +917,10 @@ bool parseAndRunScript(const String& json) {
 }
 
 bool validateScriptJson(const String& json) {
-  const int opsStart = json.indexOf("[");
+  const int opsKey = json.indexOf("\"ops\"");
+  if (opsKey < 0) return false;
+
+  const int opsStart = json.indexOf("[", opsKey);
   if (opsStart < 0) return false;
 
   uint8_t stepCount = 0;
@@ -1636,9 +1639,7 @@ void otaFromUrlTaskFn(void*) {
     return;
   }
   http.end();
-  otaUploadResult  = "OTA erfolgreich, Neustart wird ausgeführt.";
-  otaRebootPending = true;
-  otaRebootAtMs    = millis() + 2000;
+  otaUploadResult  = "OTA URL erfolgreich, Reboot bereit.";
   otaUrlProgress   = 101;
   vTaskDelete(nullptr);
 }
@@ -1712,7 +1713,20 @@ String buildLedCardsHtml() {
 }
 
 void sendLogicPageStreamed() {
-  webServer.sendContent(R"HTML(<!DOCTYPE html>
+  auto sendChunked = [](const char* payload) {
+    constexpr size_t kChunkSize = 2048;
+    const size_t totalLen = strlen(payload);
+    String chunk;
+    chunk.reserve(kChunkSize);
+    for (size_t offset = 0; offset < totalLen; offset += kChunkSize) {
+      const size_t partLen = min(kChunkSize, totalLen - offset);
+      chunk = "";
+      chunk.concat(payload + offset, partLen);
+      webServer.sendContent(chunk);
+    }
+  };
+
+  sendChunked(R"HTML(<!DOCTYPE html>
 <html lang="de">
 <head>
   <meta charset="utf-8">
@@ -1720,7 +1734,7 @@ void sendLogicPageStreamed() {
   <title>LED-Logic</title>
   <link rel="icon" type="image/png" href=")HTML");
   webServer.sendContent(kLedLogicFaviconUrl);
-  webServer.sendContent(R"HTML(">
+  sendChunked(R"HTML(">
   <style>
     :root { --bg:#f3eeff; --panel:#ffffff; --line:#ddd0f0; --text:#1a1030; --accent:#9b3db8; --muted:#6d5a84; }
     body { margin:0; font-family:"Avenir Next","Segoe UI",sans-serif; background:linear-gradient(140deg,#e8f0ff,#f5e6ff); color:var(--text); padding:18px; }
@@ -1889,11 +1903,11 @@ void sendLogicPageStreamed() {
       <svg class="title-icon" viewBox="0 0 64 64" aria-hidden="true">
           <image href=")HTML");
         webServer.sendContent(kLedLogicIconUrl);
-        webServer.sendContent(R"HTML(" x="-2" y="-2" width="68" height="68" preserveAspectRatio="xMidYMid slice"/>
+        sendChunked(R"HTML(" x="-2" y="-2" width="68" height="68" preserveAspectRatio="xMidYMid slice"/>
         </svg>
           <h1 class="title">LED-Logic <span class="title-version">V )HTML");
         webServer.sendContent(firmwareVersion);
-        webServer.sendContent(R"HTML(</span></h1>
+        sendChunked(R"HTML(</span></h1>
     </div>
   </div>
 
@@ -1980,7 +1994,7 @@ void sendLogicPageStreamed() {
             </select>
             <button type="button" class="secondary setup-save-icon" onclick="saveLedCount()" title="Übernehmen" aria-label="Übernehmen"><img src=")HTML");
   webServer.sendContent(kSetupSaveIconUrl);
-  webServer.sendContent(R"HTML(" alt="Speichern"></button>
+  sendChunked(R"HTML(" alt="Speichern"></button>
           </div>
         </div>
         <h3>Werkzeugleiste</h3>
@@ -2019,9 +2033,7 @@ void sendLogicPageStreamed() {
 </div>
 
 <script>
-  const MAX_LEDS = )HTML");
-  webServer.sendContent(String(ledCount));
-  webServer.sendContent(R"HTML(;
+  const MAX_LEDS = Number.parseInt((document.getElementById('ledCountSelect') || {}).value || '1', 10) || 1;
   const CURRENT_LED_COUNT = MAX_LEDS;
   let steps = [];
   let scriptLoopEnabled = false;
@@ -2617,7 +2629,7 @@ void sendLogicPageStreamed() {
     for (let level = 0; level <= 100; level += 10) {
       options += `<option value="${level}"${level === selected ? ' selected' : ''}>${level}</option>`;
     }
-    return `<div class="number-wrap"><select data-k="${key}" style="width:58px">${options}</select><span>%</span></div>`;
+    return `<div class="number-wrap"><select data-k="${key}" style="width:72px;min-width:72px">${options}</select><span>%</span></div>`;
   }
 
   function readBlockValues(id, type) {
@@ -3175,6 +3187,9 @@ void sendLogicPageStreamed() {
     });
 
     const canvas = document.getElementById('scriptCanvas');
+    if (!canvas) {
+      return;
+    }
     canvas.addEventListener('dragover', event => {
       if (!dragDropEnabled) {
         clearDropHints();
@@ -3362,6 +3377,9 @@ void sendLogicPageStreamed() {
     // falls back to the stored step.values when the element doesn't exist yet.
     syncStepsFromDom();
     const list = document.getElementById('scriptList');
+    if (!list) {
+      return;
+    }
     list.innerHTML = '';
 
     const scriptStart = document.createElement('div');
@@ -3516,7 +3534,8 @@ void sendLogicPageStreamed() {
     return { ok: true };
   }
 
-  function buildPayload() {
+  function buildPayload(options = {}) {
+    const expandRepeats = options.expandRepeats !== false;
     syncStepsFromDom();
     const raw = steps.map(stepRef => readBlock(stepRef.id)).filter(Boolean);
     const uniqueNameCheck = validateUniqueSetVariableNames(raw);
@@ -3528,17 +3547,22 @@ void sendLogicPageStreamed() {
     if (raw.some(item => item.op === 'repeat_end')) {
       // top-level repeat_end without matching start is handled below by compileSequence return
     }
-    const compiled = compileSequence(raw, 0);
-    if (compiled.error) {
-      return { error: compiled.error };
+    let ops = raw;
+    if (expandRepeats) {
+      const compiled = compileSequence(raw, 0);
+      if (compiled.error) {
+        return { error: compiled.error };
+      }
+      if (compiled.closed) {
+        return { error: 'Repeat Ende ohne passenden Repeat Start.' };
+      }
+      ops = compiled.ops;
     }
-    if (compiled.closed) {
-      return { error: 'Repeat Ende ohne passenden Repeat Start.' };
-    }
+
     return {
       loop: scriptLoopEnabled,
       vars: currentVariables.map(variable => ({ name: variable.name, type: variable.type, value: variable.type === 'color' ? variable.hex : variable.value })),
-      ops: compiled.ops
+      ops
     };
   }
 
@@ -3578,7 +3602,7 @@ void sendLogicPageStreamed() {
   }
 
   function saveScript() {
-    const payload = buildPayload();
+    const payload = buildPayload({ expandRepeats: true });
     if (payload.error) {
       setStatus(payload.error, false);
       return;
@@ -3587,6 +3611,13 @@ void sendLogicPageStreamed() {
       setStatus('Keine Schritte definiert.', false);
       return;
     }
+
+    const uiPayload = buildPayload({ expandRepeats: false });
+    if (uiPayload.error) {
+      setStatus(uiPayload.error, false);
+      return;
+    }
+    payload.ui_ops = uiPayload.ops;
 
     fetchScriptNames()
       .then(scriptNames => {
@@ -3803,6 +3834,10 @@ void sendLogicPageStreamed() {
         });
       } else if (op.op === 'change_var') {
         result.push({ id, type: 'change_variable', values: { name: op.name || 'var_name', op_type: op.op_type || 'add', value: String(op.value != null ? op.value : 0) } });
+      } else if (op.op === 'repeat_start') {
+        result.push({ id, type: 'repeat_start', values: { count: String(op.count != null ? op.count : 2) } });
+      } else if (op.op === 'repeat_end') {
+        result.push({ id, type: 'repeat_end', values: {} });
       } else if (op.op === 'all_off') {
         result.push({ id, type: 'all_off', values: { leds: op.leds || String(op.led != null ? op.led : 0) } });
       }
@@ -3815,10 +3850,16 @@ void sendLogicPageStreamed() {
       .then(r => { if (!r.ok) throw new Error(); return r.json(); })
       .then(data => {
         syncStepsFromDom();
-        steps = stepsFromOps(data.ops || []);
+        const uiOps = Array.isArray(data.ui_ops) ? data.ui_ops : [];
+        steps = stepsFromOps(uiOps.length ? uiOps : (data.ops || []));
         scriptLoopEnabled = !!data.loop;
         renderList();
-        const activePayload = { loop: !!data.loop, ops: Array.isArray(data.ops) ? data.ops : [] };
+        const activePayload = {
+          loop: !!data.loop,
+          vars: Array.isArray(data.vars) ? data.vars : [],
+          ops: Array.isArray(data.ops) ? data.ops : [],
+          ui_ops: uiOps.length ? uiOps : (Array.isArray(data.ops) ? data.ops : [])
+        };
         fetch('/script/save', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -3849,11 +3890,17 @@ void sendLogicPageStreamed() {
         return response.json();
       })
       .then(data => {
-        if (!data || !Array.isArray(data.ops) || data.ops.length === 0) {
+        if (!data) {
+          return;
+        }
+        const uiOps = Array.isArray(data.ui_ops) ? data.ui_ops : [];
+        const fallbackOps = Array.isArray(data.ops) ? data.ops : [];
+        const sourceOps = uiOps.length ? uiOps : fallbackOps;
+        if (sourceOps.length === 0) {
           return;
         }
         syncStepsFromDom();
-        steps = stepsFromOps(data.ops);
+        steps = stepsFromOps(sourceOps);
         scriptLoopEnabled = !!data.loop;
         ledSimulatorRunning = true;
         syncToolbarStates();
@@ -3867,11 +3914,16 @@ void sendLogicPageStreamed() {
 
   syncLedCountSelect();
   syncToolbarStates();
-  setupToolboxDnD();
-  setupTouchDnD();
   renderList();
-  refreshLogicVariables();
-  loadActiveScriptFromDevice();
+  try {
+    setupToolboxDnD();
+    setupTouchDnD();
+    refreshLogicVariables();
+    loadActiveScriptFromDevice();
+  } catch (error) {
+    setStatus('Script-UI Fehler: ' + (error && error.message ? error.message : 'Initialisierung fehlgeschlagen'), false);
+    console.log(error);
+  }
 </script>
 </body>
 </html>)HTML");
@@ -4560,6 +4612,24 @@ String buildConfigPage() {
     function setupOtaUpdateUrl() {
       const form = document.querySelector('form[action="/ota/update_url"]');
       if (!form) return;
+      const rebootBtn = document.getElementById('ota-progress-reboot-btn');
+
+      if (rebootBtn) {
+        rebootBtn.addEventListener('click', async () => {
+          rebootBtn.disabled = true;
+          const label = document.getElementById('ota-progress-label');
+          const pct = document.getElementById('ota-progress-pct');
+          if (label) label.textContent = 'Reboot wird gestartet...';
+          if (pct) pct.textContent = '';
+          try {
+            await fetch('/ota/reboot', { method: 'POST' });
+          } catch (_) {
+            // device may already disconnect while rebooting
+          }
+          waitForDeviceAndRedirect(label);
+        });
+      }
+
       form.addEventListener('submit', async evt => {
         evt.preventDefault();
         const url = document.getElementById('bin-url').value.trim();
@@ -4573,6 +4643,10 @@ String buildConfigPage() {
         bar.style.background = 'linear-gradient(90deg,#2f8eff,#1a5fd9)';
         label.textContent = 'Update wird gestartet\u2026';
         pct.textContent = '0%';
+        if (rebootBtn) {
+          rebootBtn.style.display = 'none';
+          rebootBtn.disabled = false;
+        }
         try {
           const resp = await fetch('/ota/update_url', {
             method: 'POST',
@@ -4609,8 +4683,10 @@ String buildConfigPage() {
               clearInterval(poll);
               bar.style.width = '100%';
               pct.textContent = '100%';
-              label.textContent = 'Erfolgreich! Warte auf Neustart\u2026';
-              waitForDeviceAndRedirect(label);
+              label.textContent = 'Firmware installiert. Reboot starten.';
+              if (rebootBtn) {
+                rebootBtn.style.display = 'inline-flex';
+              }
               return;
             }
             if (p >= 0) {
@@ -4730,6 +4806,7 @@ String buildConfigPage() {
         <div id="ota-progress-bar" style="height:100%;width:0%;background:linear-gradient(90deg,#2f8eff,#1a5fd9);border-radius:999px;transition:width 0.3s ease;"></div>
       </div>
       <p id="ota-progress-pct" style="margin:0;text-align:right;font-size:0.9rem;font-weight:700;color:#2f8eff;">0%</p>
+      <button id="ota-progress-reboot-btn" class="primary" type="button" style="display:none;justify-content:center;">Reboot</button>
     </div>
   </div>
 
@@ -5261,11 +5338,15 @@ void handleOtaUploadFinish() {
 }
 
 void handleOtaReboot() {
-  if (!otaUploadReadyForReboot) {
+  const bool canRebootAfterUrl = (otaUrlProgress == 101);
+  if (!otaUploadReadyForReboot && !canRebootAfterUrl) {
     webServer.send(409, "application/json", "{\"error\":\"Kein fertiges Upload-Update vorhanden\"}");
     return;
   }
   otaUploadReadyForReboot = false;
+  if (canRebootAfterUrl) {
+    otaUrlProgress = -1;
+  }
   otaRebootPending = true;
   otaRebootAtMs = millis() + 500;
   appendLog("Manueller OTA Reboot angefordert.");

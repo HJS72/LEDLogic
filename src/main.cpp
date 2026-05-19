@@ -4542,7 +4542,8 @@ String buildConfigPage() {
                   const r = await fetch('/status', { cache: 'no-store' });
                   if (r.ok) {
                     clearInterval(waitOnline);
-                    window.location.href = '/';
+                    label.textContent = 'Ger\u00e4t bereit \u2013 Weiterleitung…';
+                    setTimeout(() => { window.location.href = '/'; }, 1500);
                   }
                 } catch (_) { /* still rebooting */ }
               }, 1500);
@@ -4561,7 +4562,8 @@ String buildConfigPage() {
                 const r = await fetch('/status', { cache: 'no-store' });
                 if (r.ok) {
                   clearInterval(waitOnline);
-                  window.location.href = '/';
+                  label.textContent = 'Ger\u00e4t bereit \u2013 Weiterleitung…';
+                  setTimeout(() => { window.location.href = '/'; }, 1500);
                 }
               } catch (_) { /* still rebooting */ }
             }, 1500);

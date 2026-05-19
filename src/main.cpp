@@ -9,6 +9,7 @@
 #include <WiFi.h>
 #include <driver/rmt.h>
 #include "build_version_override.h"
+#include "assets/icons/led_icon_180x180_png.h"
 #include "assets/icons/led_icon_75x75_png.h"
 #include "assets/icons/favicon_ico.h"
 #include "assets/icons/save_script_16_png.h"
@@ -27,6 +28,9 @@ constexpr uint8_t kLedDefaultsVersion = 3;
 constexpr char kRedirectLocation[] = "http://192.168.4.1/config";
 constexpr char kLedLogicIconUrl[] = "/assets/icons/led_icon_75x75.png";
 constexpr char kLedLogicFaviconUrl[] = "/favicon.ico";
+constexpr char kAppleTouchIconUrl[] = "/apple-touch-icon.png";
+constexpr char kAppleTouchIconPrecomposedUrl[] = "/apple-touch-icon-precomposed.png";
+constexpr char kAppleTouchIcon180Url[] = "/apple-touch-icon-180x180.png";
 constexpr char kSetupSaveIconUrl[] = "/assets/icons/save_script_16.png";
 constexpr char kDefaultOtaCheckUrl[] = "https://raw.githubusercontent.com/HJS72/LEDLogic/main/ota/latest.json";
 constexpr char kDefaultOtaBinUrl[] = "https://raw.githubusercontent.com/HJS72/LEDLogic/main/firmware/firmware.bin";
@@ -1762,6 +1766,14 @@ void sendLogicPageStreamed() {
   <link rel="icon" type="image/png" href=")HTML");
   webServer.sendContent(kLedLogicFaviconUrl);
   sendChunked(R"HTML(">
+  <link rel="apple-touch-icon" sizes="180x180" href=")HTML");
+  webServer.sendContent(kAppleTouchIcon180Url);
+  sendChunked(R"HTML(">
+  <link rel="apple-touch-icon-precomposed" sizes="180x180" href=")HTML");
+  webServer.sendContent(kAppleTouchIcon180Url);
+  sendChunked(R"HTML(">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="LED-Logic">
   <style>
     :root { --bg:#f3eeff; --panel:#ffffff; --line:#ddd0f0; --text:#1a1030; --accent:#9b3db8; --muted:#6d5a84; }
     body { margin:0; font-family:"Avenir Next","Segoe UI",sans-serif; background:linear-gradient(140deg,#e8f0ff,#f5e6ff); color:var(--text); padding:18px; }
@@ -3967,6 +3979,16 @@ String buildConfigPage() {
   <link rel="icon" type="image/png" href=")HTML";
   page += kLedLogicFaviconUrl;
   page += R"HTML(">
+  <link rel="apple-touch-icon" sizes="180x180" href=")HTML";
+  page += kAppleTouchIcon180Url;
+  page += R"HTML(">
+  <link rel="apple-touch-icon-precomposed" sizes="180x180" href=")HTML";
+  page += kAppleTouchIcon180Url;
+  page += R"HTML(">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="LED-Logic">
+  )HTML";
+  page += R"HTML(
   <style>
     :root { --bg:#f3eeff; --panel:#fffaff; --line:#ddd0f0; --text:#1a1030; --muted:#6d5a84; --accent:#9b3db8; --danger:#ab2f2f; }
     body { margin:0; min-height:100vh; font-family:"Avenir Next","Segoe UI",sans-serif; color:var(--text); background:linear-gradient(160deg,#e8f0ff 0%,#f5e6ff 100%); padding:20px; }
@@ -5433,6 +5455,11 @@ void handleFaviconIco() {
   webServer.send_P(200, "image/x-icon", reinterpret_cast<const char*>(led_favicon_ico), led_favicon_ico_len);
 }
 
+void handleAppleTouchIconPng() {
+  webServer.sendHeader("Cache-Control", "public, max-age=86400");
+  webServer.send_P(200, "image/png", reinterpret_cast<const char*>(led_icon_180_png), led_icon_180_png_len);
+}
+
 void handleSetupSaveIconPng() {
   webServer.sendHeader("Cache-Control", "public, max-age=86400");
   webServer.send_P(200, "image/png", reinterpret_cast<const char*>(save_script_16_png), save_script_16_png_len);
@@ -5456,6 +5483,9 @@ void configureWebServer() {
   webServer.on("/config", HTTP_GET, handleConfig);
   webServer.on(kLedLogicIconUrl, HTTP_GET, handleIconPng);
   webServer.on(kLedLogicFaviconUrl, HTTP_GET, handleFaviconIco);
+  webServer.on(kAppleTouchIconUrl, HTTP_GET, handleAppleTouchIconPng);
+  webServer.on(kAppleTouchIconPrecomposedUrl, HTTP_GET, handleAppleTouchIconPng);
+  webServer.on(kAppleTouchIcon180Url, HTTP_GET, handleAppleTouchIconPng);
   webServer.on(kSetupSaveIconUrl, HTTP_GET, handleSetupSaveIconPng);
   webServer.on("/script/save", HTTP_POST, handleScriptSave);
   webServer.on("/script/run", HTTP_POST, handleScriptRun);

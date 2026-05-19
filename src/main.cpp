@@ -124,6 +124,7 @@ unsigned long lastLedRenderMs = 0;
 bool otaRebootPending = false;
 unsigned long otaRebootAtMs = 0;
 String otaUploadResult = "";
+bool otaUploadReadyForReboot = false;
 String firmwareVersion = "2.000000.0000";
 volatile int  otaUrlProgress = -1;   // -1=idle, 0-100=running, 101=done, -2=error
 String        otaUrlError    = "";
@@ -4634,6 +4635,33 @@ String buildConfigPage() {
       const rebootBtn = document.getElementById('ota-upload-reboot-btn');
       if (!form || !fileInput || !overlay || !label || !rebootBtn) return;
 
+      let uploadStatusPoll = null;
+
+      function stopUploadStatusPoll() {
+        if (uploadStatusPoll) {
+          clearInterval(uploadStatusPoll);
+          uploadStatusPoll = null;
+        }
+      }
+
+      function startUploadStatusPoll() {
+        stopUploadStatusPoll();
+        uploadStatusPoll = setInterval(async () => {
+          try {
+            const r = await fetch('/ota/upload_status', { cache: 'no-store' });
+            if (!r.ok) return;
+            const data = await r.json();
+            if (data.ready) {
+              stopUploadStatusPoll();
+              label.textContent = 'Firmware installiert. Bitte Reboot starten.';
+              rebootBtn.style.display = 'inline-flex';
+            }
+          } catch (_) {
+            // keep polling
+          }
+        }, 1200);
+      }
+
       form.addEventListener('submit', async evt => {
         evt.preventDefault();
         if (!fileInput.files || fileInput.files.length === 0) {
@@ -4645,26 +4673,42 @@ String buildConfigPage() {
         rebootBtn.style.display = 'none';
         rebootBtn.disabled = false;
         label.textContent = 'Firmware wird installiert...';
+        startUploadStatusPoll();
 
         try {
           const formData = new FormData(form);
-          const resp = await fetch('/ota/upload', {
-            method: 'POST',
-            body: formData
-          });
-          const text = await resp.text();
-          if (!resp.ok) {
-            label.textContent = 'Fehler: ' + (text || resp.statusText);
-            return;
-          }
-          label.textContent = 'Firmware installiert. Bitte Reboot starten.';
-          rebootBtn.style.display = 'inline-flex';
+          const xhr = new XMLHttpRequest();
+          xhr.open('POST', '/ota/upload', true);
+          xhr.timeout = 180000;
+
+          xhr.onload = () => {
+            stopUploadStatusPoll();
+            if (xhr.status >= 200 && xhr.status < 300) {
+              label.textContent = 'Firmware installiert. Bitte Reboot starten.';
+              rebootBtn.style.display = 'inline-flex';
+            } else {
+              label.textContent = 'Fehler: ' + (xhr.responseText || ('HTTP ' + xhr.status));
+            }
+          };
+
+          xhr.onerror = () => {
+            // On ESP32 uploads the request callback can drop; keep status polling as fallback.
+            label.textContent = 'Upload abgeschlossen? Status wird geprueft...';
+          };
+
+          xhr.ontimeout = () => {
+            label.textContent = 'Upload dauert laenger... Status wird geprueft...';
+          };
+
+          xhr.send(formData);
         } catch (err) {
+          stopUploadStatusPoll();
           label.textContent = 'Upload fehlgeschlagen. Bitte erneut versuchen.';
         }
       });
 
       rebootBtn.addEventListener('click', async () => {
+        stopUploadStatusPoll();
         rebootBtn.disabled = true;
         label.textContent = 'Reboot wird gestartet...';
         try {
@@ -5194,8 +5238,16 @@ void handleOtaProgress() {
   webServer.send(200, "application/json", json);
 }
 
+void handleOtaUploadStatus() {
+  String json = "{\"ready\":";
+  json += otaUploadReadyForReboot ? "true" : "false";
+  json += ",\"result\":\"" + jsonEscape(otaUploadResult) + "\"}";
+  webServer.send(200, "application/json", json);
+}
+
 void handleOtaUploadFinish() {
   if (Update.hasError()) {
+    otaUploadReadyForReboot = false;
     otaUploadResult = "Upload fehlgeschlagen: " + String(Update.errorString());
     appendLog("OTA Upload Fehler: " + otaUploadResult);
     webServer.send(500, "text/plain", otaUploadResult);
@@ -5203,11 +5255,17 @@ void handleOtaUploadFinish() {
   }
 
   otaUploadResult = "Upload erfolgreich, Reboot bereit.";
+  otaUploadReadyForReboot = true;
   appendLog("OTA Upload erfolgreich.");
   webServer.send(200, "text/plain", otaUploadResult);
 }
 
 void handleOtaReboot() {
+  if (!otaUploadReadyForReboot) {
+    webServer.send(409, "application/json", "{\"error\":\"Kein fertiges Upload-Update vorhanden\"}");
+    return;
+  }
+  otaUploadReadyForReboot = false;
   otaRebootPending = true;
   otaRebootAtMs = millis() + 500;
   appendLog("Manueller OTA Reboot angefordert.");
@@ -5220,6 +5278,7 @@ void handleOtaUploadData() {
   if (upload.status == UPLOAD_FILE_START) {
     appendLog("OTA Upload gestartet: " + upload.filename);
     otaUploadResult = "Upload läuft";
+    otaUploadReadyForReboot = false;
     if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
       otaUploadResult = "Update.begin fehlgeschlagen: " + String(Update.errorString());
       appendLog(otaUploadResult);
@@ -5237,6 +5296,7 @@ void handleOtaUploadData() {
     }
   } else if (upload.status == UPLOAD_FILE_ABORTED) {
     Update.abort();
+    otaUploadReadyForReboot = false;
     otaUploadResult = "Upload abgebrochen";
     appendLog(otaUploadResult);
   }
@@ -5299,6 +5359,7 @@ void configureWebServer() {
   webServer.on("/ota/check", HTTP_GET, handleOtaCheck);
   webServer.on("/ota/update_url", HTTP_POST, handleOtaUpdateUrl);
   webServer.on("/ota/progress", HTTP_GET, handleOtaProgress);
+  webServer.on("/ota/upload_status", HTTP_GET, handleOtaUploadStatus);
   webServer.on("/ota/upload", HTTP_POST, handleOtaUploadFinish, handleOtaUploadData);
   webServer.on("/ota/reboot", HTTP_POST, handleOtaReboot);
 

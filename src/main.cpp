@@ -4498,47 +4498,65 @@ String buildConfigPage() {
     setupPasswordToggle();
     setupOtaCheck();
     setupOtaUpdateUrl();
-    refreshStatus();
+    setupOtaUpload();
     setupHostnameSave();
+    refreshStatus();
     setInterval(refreshStatus, 3000);
 
     // V2 Variables UI Initialization
     resetVariableForm();
     refreshVariables();
 
-    function setupOtaUpdateUrl() {
-          function setupHostnameSave() {
-            const btn  = document.getElementById('hostname-save-btn');
-            const inp  = document.getElementById('hostname-input');
-            const msg  = document.getElementById('hostname-msg');
-            const addr = document.getElementById('mdns-addr');
-            if (!btn) return;
-            btn.addEventListener('click', async () => {
-              const name = inp.value.trim();
-              if (!name) { msg.textContent = 'Bitte einen Hostnamen eingeben.'; return; }
-              btn.disabled = true;
-              msg.textContent = 'Wird gespeichert\u2026';
-              try {
-                const resp = await fetch('/hostname/save', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                  body: 'hostname=' + encodeURIComponent(name)
-                });
-                const data = await resp.json().catch(() => ({}));
-                if (resp.ok) {
-                  msg.textContent = 'Gespeichert. Neuer mDNS-Name: ' + data.hostname + '.local';
-                  if (addr) addr.textContent = data.hostname + '.local';
-                  inp.value = data.hostname;
-                } else {
-                  msg.textContent = 'Fehler: ' + (data.error || resp.statusText);
-                }
-              } catch (e) {
-                msg.textContent = 'Verbindungsfehler.';
-              }
-              btn.disabled = false;
-            });
+    function waitForDeviceAndRedirect(labelElement) {
+      const waitOnline = setInterval(async () => {
+        try {
+          const r = await fetch('/status', { cache: 'no-store' });
+          if (r.ok) {
+            clearInterval(waitOnline);
+            if (labelElement) {
+              labelElement.textContent = 'Geraet bereit - Weiterleitung...';
+            }
+            setTimeout(() => { window.location.href = '/'; }, 1500);
           }
+        } catch (_) {
+          // device still rebooting
+        }
+      }, 1500);
+    }
 
+    function setupHostnameSave() {
+      const btn  = document.getElementById('hostname-save-btn');
+      const inp  = document.getElementById('hostname-input');
+      const msg  = document.getElementById('hostname-msg');
+      const addr = document.getElementById('mdns-addr');
+      if (!btn) return;
+      btn.addEventListener('click', async () => {
+        const name = inp.value.trim();
+        if (!name) { msg.textContent = 'Bitte einen Hostnamen eingeben.'; return; }
+        btn.disabled = true;
+        msg.textContent = 'Wird gespeichert...';
+        try {
+          const resp = await fetch('/hostname/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: 'hostname=' + encodeURIComponent(name)
+          });
+          const data = await resp.json().catch(() => ({}));
+          if (resp.ok) {
+            msg.textContent = 'Gespeichert. Neuer mDNS-Name: ' + data.hostname + '.local';
+            if (addr) addr.textContent = data.hostname + '.local';
+            inp.value = data.hostname;
+          } else {
+            msg.textContent = 'Fehler: ' + (data.error || resp.statusText);
+          }
+        } catch (e) {
+          msg.textContent = 'Verbindungsfehler.';
+        }
+        btn.disabled = false;
+      });
+    }
+
+    function setupOtaUpdateUrl() {
       const form = document.querySelector('form[action="/ota/update_url"]');
       if (!form) return;
       form.addEventListener('submit', async evt => {
@@ -4591,17 +4609,7 @@ String buildConfigPage() {
               bar.style.width = '100%';
               pct.textContent = '100%';
               label.textContent = 'Erfolgreich! Warte auf Neustart\u2026';
-              // Poll until device is back online, then redirect to /
-              const waitOnline = setInterval(async () => {
-                try {
-                  const r = await fetch('/status', { cache: 'no-store' });
-                  if (r.ok) {
-                    clearInterval(waitOnline);
-                    label.textContent = 'Ger\u00e4t bereit \u2013 Weiterleitung…';
-                    setTimeout(() => { window.location.href = '/'; }, 1500);
-                  }
-                } catch (_) { /* still rebooting */ }
-              }, 1500);
+              waitForDeviceAndRedirect(label);
               return;
             }
             if (p >= 0) {
@@ -4612,18 +4620,60 @@ String buildConfigPage() {
           } catch (e) {
             clearInterval(poll);
             label.textContent = 'Neustart l\u00e4uft \u2013 bitte warten\u2026';
-            const waitOnline = setInterval(async () => {
-              try {
-                const r = await fetch('/status', { cache: 'no-store' });
-                if (r.ok) {
-                  clearInterval(waitOnline);
-                  label.textContent = 'Ger\u00e4t bereit \u2013 Weiterleitung…';
-                  setTimeout(() => { window.location.href = '/'; }, 1500);
-                }
-              } catch (_) { /* still rebooting */ }
-            }, 1500);
+            waitForDeviceAndRedirect(label);
           }
         }, 500);
+      });
+    }
+
+    function setupOtaUpload() {
+      const form = document.querySelector('form[action="/ota/upload"]');
+      const fileInput = document.getElementById('upload-file');
+      const overlay = document.getElementById('ota-upload-overlay');
+      const label = document.getElementById('ota-upload-label');
+      const rebootBtn = document.getElementById('ota-upload-reboot-btn');
+      if (!form || !fileInput || !overlay || !label || !rebootBtn) return;
+
+      form.addEventListener('submit', async evt => {
+        evt.preventDefault();
+        if (!fileInput.files || fileInput.files.length === 0) {
+          label.textContent = 'Bitte zuerst eine Firmware-Datei auswaehlen.';
+          return;
+        }
+
+        overlay.style.display = 'flex';
+        rebootBtn.style.display = 'none';
+        rebootBtn.disabled = false;
+        label.textContent = 'Firmware wird installiert...';
+
+        try {
+          const formData = new FormData(form);
+          const resp = await fetch('/ota/upload', {
+            method: 'POST',
+            body: formData
+          });
+          const text = await resp.text();
+          if (!resp.ok) {
+            label.textContent = 'Fehler: ' + (text || resp.statusText);
+            return;
+          }
+          label.textContent = 'Firmware installiert. Bitte Reboot starten.';
+          rebootBtn.style.display = 'inline-flex';
+        } catch (err) {
+          label.textContent = 'Upload fehlgeschlagen. Bitte erneut versuchen.';
+        }
+      });
+
+      rebootBtn.addEventListener('click', async () => {
+        rebootBtn.disabled = true;
+        label.textContent = 'Reboot wird gestartet...';
+        try {
+          await fetch('/ota/reboot', { method: 'POST' });
+        } catch (_) {
+          // device may already drop connection while rebooting
+        }
+        label.textContent = 'Neustart laeuft - bitte warten...';
+        waitForDeviceAndRedirect(label);
       });
     }
   </script>
@@ -4636,6 +4686,14 @@ String buildConfigPage() {
         <div id="ota-progress-bar" style="height:100%;width:0%;background:linear-gradient(90deg,#2f8eff,#1a5fd9);border-radius:999px;transition:width 0.3s ease;"></div>
       </div>
       <p id="ota-progress-pct" style="margin:0;text-align:right;font-size:0.9rem;font-weight:700;color:#2f8eff;">0%</p>
+    </div>
+  </div>
+
+  <div id="ota-upload-overlay" style="display:none;position:fixed;inset:0;background:rgba(20,32,51,0.62);z-index:1000;align-items:center;justify-content:center;">
+    <div style="background:#fff;border-radius:16px;padding:28px 32px;width:min(380px,90vw);display:grid;gap:14px;box-shadow:0 20px 46px rgba(20,32,51,0.34);">
+      <h3 style="margin:0;font-size:1.1rem;">Firmware wird installiert</h3>
+      <p id="ota-upload-label" style="margin:0;font-size:0.9rem;color:#4e5874;">Bitte warten...</p>
+      <button id="ota-upload-reboot-btn" class="primary" type="button" style="display:none;justify-content:center;">Reboot</button>
     </div>
   </div>
 </body>
@@ -5144,11 +5202,16 @@ void handleOtaUploadFinish() {
     return;
   }
 
-  otaUploadResult = "Upload erfolgreich, Neustart wird ausgeführt.";
+  otaUploadResult = "Upload erfolgreich, Reboot bereit.";
   appendLog("OTA Upload erfolgreich.");
-  otaRebootPending = true;
-  otaRebootAtMs = millis() + 1500;
   webServer.send(200, "text/plain", otaUploadResult);
+}
+
+void handleOtaReboot() {
+  otaRebootPending = true;
+  otaRebootAtMs = millis() + 500;
+  appendLog("Manueller OTA Reboot angefordert.");
+  webServer.send(200, "application/json", "{\"status\":\"rebooting\"}");
 }
 
 void handleOtaUploadData() {
@@ -5237,6 +5300,7 @@ void configureWebServer() {
   webServer.on("/ota/update_url", HTTP_POST, handleOtaUpdateUrl);
   webServer.on("/ota/progress", HTTP_GET, handleOtaProgress);
   webServer.on("/ota/upload", HTTP_POST, handleOtaUploadFinish, handleOtaUploadData);
+  webServer.on("/ota/reboot", HTTP_POST, handleOtaReboot);
 
   webServer.on("/generate_204", HTTP_ANY, handleCaptiveProbe);
   webServer.on("/hotspot-detect.html", HTTP_ANY, handleCaptiveProbe);

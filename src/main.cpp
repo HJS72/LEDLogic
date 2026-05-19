@@ -69,7 +69,7 @@ struct Variable {
 
 struct ScriptStep {
   ScriptOpType op;
-  uint16_t ledMask;      // bitmask for LED selection
+  uint16_t ledMask;      // bitmask for LED selection (0 = use ledsVarName)
   uint8_t r1, g1, b1;
   uint8_t r2, g2, b2;
   uint8_t brightness;    // 0-255
@@ -77,6 +77,7 @@ struct ScriptStep {
   
   // V2: Variable operation fields
   char varName[16];
+  char ledsVarName[16];  // if non-empty, resolve ledMask dynamically from this variable
   VarType varType;
   uint8_t varIndex;      // index into variables array
   uint8_t operation;     // 0=set, 1=add, 2=subtract, 3=multiply
@@ -121,7 +122,7 @@ unsigned long lastLedRenderMs = 0;
 bool otaRebootPending = false;
 unsigned long otaRebootAtMs = 0;
 String otaUploadResult = "";
-String firmwareVersion = "1.000000.0000";
+String firmwareVersion = "2.000000.0000";
 bool wsReady = false;
 rmt_item32_t wsItems[kLedMaxCount * 24];
 
@@ -143,6 +144,9 @@ uint8_t scriptG[kLedMaxCount] = {};
 uint8_t scriptB[kLedMaxCount] = {};
 uint8_t scriptBr[kLedMaxCount] = {};
 bool scriptEnabled[kLedMaxCount] = {};
+// True while script mode is active (running or stopped-but-not-cleared).
+// ws2812Show uses script buffers as long as this is true.
+bool scriptOutputActive = false;
 String savedScriptJson = "";  // persisted JSON
 
 void saveLedConfig();
@@ -416,7 +420,7 @@ void ws2812Show() {
     uint8_t gg = 0;
     uint8_t bb = 0;
 
-    if (scriptRunning) {
+    if (scriptOutputActive) {
       if (scriptEnabled[led]) {
         rr = (static_cast<uint16_t>(scriptR[led]) * scriptBr[led]) / 255;
         gg = (static_cast<uint16_t>(scriptG[led]) * scriptBr[led]) / 255;
@@ -660,7 +664,7 @@ static bool parseAndStoreVariableObject(const String& varJson) {
       value = 255;
     }
     if (varType == VarType::kLedMask) {
-      value &= allLedMask();
+      value = static_cast<uint16_t>(constrain(value, static_cast<uint16_t>(1), static_cast<uint16_t>(kLedMaxCount)));
     }
   }
 
@@ -707,6 +711,11 @@ static uint16_t parseLedMaskValue(const String& rawValue, const uint16_t default
 
   Variable var = {};
   if (resolveVariableReference(rawValue, var) && var.type == VarType::kLedMask) {
+    // led_mask variables are interpreted as 1-based LED numbers in scripts.
+    if (var.value >= 1 && var.value <= kLedMaxCount) {
+      return static_cast<uint16_t>(1U << (var.value - 1));
+    }
+    // Backward compatibility for older persisted values that stored bitmasks.
     return static_cast<uint16_t>(var.value & allLedMask());
   }
 
@@ -801,9 +810,21 @@ bool parseAndRunScript(const String& json) {
     ScriptStep step = {};
     bool valid = true;
 
+    // Helper: parse LED selection, storing variable name for dynamic resolution
+    auto parseLedSelection = [&](const uint16_t defaultMask) {
+      const String ledsStr = extractJsonStr(opJson, "leds");
+      if (ledsStr.startsWith("$")) {
+        copyVariableName(step.ledsVarName, ledsStr.substring(1));
+        step.ledMask = defaultMask;  // fallback if variable not found at tick time
+      } else {
+        step.ledsVarName[0] = '\0';
+        step.ledMask = parseLedMaskFromOp(opJson, defaultMask);
+      }
+    };
+
     if (opType == "set") {
       step.op = ScriptOpType::kSet;
-      step.ledMask = parseLedMaskFromOp(opJson, static_cast<uint16_t>(1U));
+      parseLedSelection(static_cast<uint16_t>(1U));
       valid = parseColorValue(extractJsonStr(opJson, "color"), step.r1, step.g1, step.b1);
       step.brightness = parseBrightnessValue(extractJsonStr(opJson, "br"));
     } else if (opType == "wait") {
@@ -811,18 +832,18 @@ bool parseAndRunScript(const String& json) {
       step.durationMs = parseDurationValueMs(extractJsonStr(opJson, "s"));
     } else if (opType == "brightness") {
       step.op = ScriptOpType::kBrightness;
-      step.ledMask = parseLedMaskFromOp(opJson, static_cast<uint16_t>(1U));
+      parseLedSelection(static_cast<uint16_t>(1U));
       step.brightness = parseBrightnessValue(extractJsonStr(opJson, "br"));
     } else if (opType == "fade") {
       step.op = ScriptOpType::kFade;
-      step.ledMask = parseLedMaskFromOp(opJson, static_cast<uint16_t>(1U));
+      parseLedSelection(static_cast<uint16_t>(1U));
       valid = parseColorValue(extractJsonStr(opJson, "from"), step.r1, step.g1, step.b1) &&
               parseColorValue(extractJsonStr(opJson, "to"), step.r2, step.g2, step.b2);
       step.durationMs = parseDurationValueMs(extractJsonStr(opJson, "s"));
       step.brightness = parseBrightnessValue(extractJsonStr(opJson, "br"));
     } else if (opType == "all_off") {
       step.op = ScriptOpType::kAllOff;
-      step.ledMask = parseLedMaskFromOp(opJson, allLedMask());
+      parseLedSelection(allLedMask());
     } else if (opType == "set_var") {
       const String varName = extractJsonStr(opJson, "name");
       const String varTypeRaw = extractJsonStr(opJson, "type");
@@ -865,6 +886,7 @@ bool parseAndRunScript(const String& json) {
   scriptCurrentStep = 0;
   scriptStepStartMs = millis();
   scriptRunning = true;
+  scriptOutputActive = true;
 
   // Execute first SET/ALLOFF immediately
   const ScriptStep& first = scriptSteps[0];
@@ -918,6 +940,19 @@ bool validateScriptJson(const String& json) {
   return stepCount > 0;
 }
 
+static uint16_t resolveStepLedMask(const ScriptStep& step) {
+  if (step.ledsVarName[0] == '\0') {
+    return step.ledMask;
+  }
+  Variable var = {};
+  if (getVariable(String(step.ledsVarName), var) && var.type == VarType::kLedMask) {
+    if (var.value >= 1 && var.value <= kLedMaxCount) {
+      return static_cast<uint16_t>(1U << (var.value - 1));
+    }
+  }
+  return step.ledMask;  // fallback to parse-time default
+}
+
 // Called from loop(): advance script state machine
 void tickScript() {
   if (!scriptRunning || scriptStepCount == 0) return;
@@ -928,9 +963,10 @@ void tickScript() {
   bool advance = false;
 
   switch (step.op) {
-    case ScriptOpType::kSet:
+    case ScriptOpType::kSet: {
+      const uint16_t ledMask = resolveStepLedMask(step);
       for (uint8_t led = 0; led < kLedMaxCount; ++led) {
-        if ((step.ledMask & static_cast<uint16_t>(1U << led)) == 0) {
+        if ((ledMask & static_cast<uint16_t>(1U << led)) == 0) {
           continue;
         }
         scriptEnabled[led] = true;
@@ -942,9 +978,10 @@ void tickScript() {
       ws2812Show();
       advance = true;
       break;
+    }
 
     case ScriptOpType::kAllOff:
-      scriptAllOffMask(step.ledMask);
+      scriptAllOffMask(resolveStepLedMask(step));
       ws2812Show();
       advance = true;
       break;
@@ -955,9 +992,10 @@ void tickScript() {
       }
       break;
 
-    case ScriptOpType::kBrightness:
+    case ScriptOpType::kBrightness: {
+      const uint16_t ledMask = resolveStepLedMask(step);
       for (uint8_t led = 0; led < kLedMaxCount; ++led) {
-        if ((step.ledMask & static_cast<uint16_t>(1U << led)) == 0) {
+        if ((ledMask & static_cast<uint16_t>(1U << led)) == 0) {
           continue;
         }
         scriptEnabled[led] = true;
@@ -966,11 +1004,13 @@ void tickScript() {
       ws2812Show();
       advance = true;
       break;
+    }
 
-    case ScriptOpType::kFade:
+    case ScriptOpType::kFade: {
+      const uint16_t ledMask = resolveStepLedMask(step);
       if (step.durationMs == 0 || elapsed >= step.durationMs) {
         for (uint8_t led = 0; led < kLedMaxCount; ++led) {
-          if ((step.ledMask & static_cast<uint16_t>(1U << led)) == 0) {
+          if ((ledMask & static_cast<uint16_t>(1U << led)) == 0) {
             continue;
           }
           scriptEnabled[led] = true;
@@ -984,7 +1024,7 @@ void tickScript() {
       } else {
         const uint32_t t256 = (elapsed * 256UL) / step.durationMs;
         for (uint8_t led = 0; led < kLedMaxCount; ++led) {
-          if ((step.ledMask & static_cast<uint16_t>(1U << led)) == 0) {
+          if ((ledMask & static_cast<uint16_t>(1U << led)) == 0) {
             continue;
           }
           scriptEnabled[led] = true;
@@ -996,6 +1036,7 @@ void tickScript() {
         ws2812Show();
       }
       break;
+    }
 
     case ScriptOpType::kSetVariable: {
       const String varName(step.varName);
@@ -1007,7 +1048,7 @@ void tickScript() {
           numericValue = 255;
         }
         if (step.varType == VarType::kLedMask) {
-          numericValue &= allLedMask();
+          numericValue = constrain(numericValue, static_cast<uint16_t>(1), static_cast<uint16_t>(kLedMaxCount));
         }
         createOrUpdateVariable(varName, step.varType, numericValue);
       }
@@ -1035,9 +1076,10 @@ void tickScript() {
           maxValue = 255;
         }
         if (var.type == VarType::kLedMask) {
-          maxValue = allLedMask();
+          maxValue = kLedMaxCount;
         }
-        nextValue = constrain(nextValue, 0L, maxValue);
+        const long minValue = (var.type == VarType::kLedMask) ? 1L : 0L;
+        nextValue = constrain(nextValue, minValue, maxValue);
         createOrUpdateVariable(varName, var.type, static_cast<uint16_t>(nextValue), var.r, var.g, var.b);
       }
       advance = true;
@@ -2384,7 +2426,7 @@ void sendLogicPageStreamed() {
 
     filteredVariables.forEach(variable => {
       const selected = variable.name === currentValue ? ' selected' : '';
-      options += `<option value="${escapeHtml(variable.name)}"${selected}>$${escapeHtml(variable.name)} (${escapeHtml(variable.type)})</option>`;
+      options += `<option value="${escapeHtml(variable.name)}"${selected}>$${escapeHtml(variable.name)}</option>`;
     });
 
     if (!options) {
@@ -2454,33 +2496,6 @@ void sendLogicPageStreamed() {
     return defaultValueForVariableType(type);
   }
 
-  function ledMaskFromSelectionValue(rawValue) {
-    let mask = 0;
-    String(rawValue || '')
-      .split(',')
-      .map(token => token.trim())
-      .filter(token => token !== '')
-      .forEach(token => {
-        const ledNumber = Number.parseInt(token, 10);
-        if (!Number.isInteger(ledNumber) || ledNumber < 1 || ledNumber > MAX_LEDS) {
-          return;
-        }
-        mask |= (1 << (ledNumber - 1));
-      });
-    return mask || 1;
-  }
-
-  function ledSelectionValueFromMask(maskValue) {
-    const numericMask = Number.parseInt(maskValue, 10) || 0;
-    const selections = [];
-    for (let index = 0; index < MAX_LEDS; index += 1) {
-      if (numericMask & (1 << index)) {
-        selections.push(String(index + 1));
-      }
-    }
-    return selections.length ? selections.join(',') : '1';
-  }
-
   function buildLedTargetField(value) {
     const ledVariables = getVariablesByType('led_mask');
     const isVariableMode = isVariableReference(value) && ledVariables.length > 0;
@@ -2493,6 +2508,7 @@ void sendLogicPageStreamed() {
   function initSetVariableFields() {
     document.querySelectorAll('.block-set_variable').forEach(block => {
       const typeSelect = block.querySelector('[data-k="varType"]');
+      const nameInput = block.querySelector('[data-k="name"]');
       const valueInput = block.querySelector('[data-k="value"]');
       if (!typeSelect || !valueInput) {
         return;
@@ -2510,7 +2526,23 @@ void sendLogicPageStreamed() {
       }
 
       typeSelect.dataset.bound = 'true';
-      typeSelect.addEventListener('change', applyTypeDefaults);
+      typeSelect.addEventListener('change', () => {
+        applyTypeDefaults();
+        // Typwechsel beeinflusst verfügbare Variablen in nachfolgenden Blöcken.
+        syncStepsFromDom();
+        renderList();
+      });
+
+      if (nameInput && nameInput.dataset.bound !== 'true') {
+        nameInput.dataset.bound = 'true';
+        const refreshVariableSelectors = () => {
+          // Namensänderung muss in nachfolgenden Auswahlfeldern sichtbar werden.
+          syncStepsFromDom();
+          renderList();
+        };
+        nameInput.addEventListener('change', refreshVariableSelectors);
+        nameInput.addEventListener('blur', refreshVariableSelectors);
+      }
     });
   }
 
@@ -2723,9 +2755,7 @@ void sendLogicPageStreamed() {
       step.op = 'set_var';
       step.name = values.name;
       step.type = values.varType;
-      step.value = values.varType === 'led_mask'
-        ? String(ledMaskFromSelectionValue(values.value))
-        : values.value;
+      step.value = values.value;
     } else if (type === 'change_variable') {
       step.op = 'change_var';
       step.name = values.name;
@@ -2872,9 +2902,14 @@ void sendLogicPageStreamed() {
     function resolvePreviewLedTargets(rawValue, fallbackLed) {
       const variable = getVariableReference(rawValue);
       if (variable && variable.type === 'led_mask') {
+        const numericValue = parseInt(variable.value || 0, 10) || 0;
+        if (numericValue >= 1 && numericValue <= MAX_LEDS) {
+          return [numericValue - 1];
+        }
+        // Backward compatibility for older persisted values that used bitmasks.
         const result = [];
         for (let index = 0; index < MAX_LEDS; index += 1) {
-          if ((variable.value || 0) & (1 << index)) {
+          if (numericValue & (1 << index)) {
             result.push(index);
           }
         }
@@ -3166,6 +3201,135 @@ void sendLogicPageStreamed() {
     });
   }
 
+  // ── Touch-based drag & drop (iOS / iPadOS) ───────────────────────────────
+  let touchDragPayload  = null;   // same shape as dragPayload
+  let touchGhost        = null;   // floating clone element
+  let touchOffsetX      = 0;
+  let touchOffsetY      = 0;
+
+  function createTouchGhost(sourceEl, touchX, touchY) {
+    const rect   = sourceEl.getBoundingClientRect();
+    const ghost  = sourceEl.cloneNode(true);
+    ghost.style.cssText = [
+      'position:fixed',
+      'z-index:9999',
+      'pointer-events:none',
+      'opacity:0.75',
+      'box-shadow:0 8px 24px rgba(0,0,0,0.25)',
+      'border-radius:10px',
+      'left:' + rect.left + 'px',
+      'top:'  + rect.top  + 'px',
+      'width:' + rect.width + 'px',
+      'transition:none'
+    ].join(';');
+    document.body.appendChild(ghost);
+    touchOffsetX = touchX - rect.left;
+    touchOffsetY = touchY - rect.top;
+    return ghost;
+  }
+
+  function moveTouchGhost(touchX, touchY) {
+    if (!touchGhost) return;
+    touchGhost.style.left = (touchX - touchOffsetX) + 'px';
+    touchGhost.style.top  = (touchY - touchOffsetY) + 'px';
+  }
+
+  function removeTouchGhost() {
+    if (touchGhost) { touchGhost.remove(); touchGhost = null; }
+  }
+
+  function setupTouchDnD() {
+    // ── Helper: attach listeners to a single source element ──────────────
+    function attachTouchSource(el, payloadFn) {
+      el.addEventListener('touchstart', evt => {
+        if (!dragDropEnabled) return;
+        const touch = evt.touches[0];
+        touchDragPayload = payloadFn();
+        touchGhost = createTouchGhost(el, touch.clientX, touch.clientY);
+        // suppress scrolling while dragging
+        document.body.style.overflow = 'hidden';
+      }, { passive: true });
+    }
+
+    // ── Toolbox items ──────────────────────────────────────────────────────
+    document.querySelectorAll('.tool-item').forEach(tool => {
+      attachTouchSource(tool, () => ({ source: 'tool', type: tool.dataset.tool }));
+    });
+
+    // Note: block items are re-created on every renderList(); their touch
+    // listeners are attached in attachBlockTouchSource() called from renderList().
+
+    // ── Global touchmove: move ghost + show drop hint ─────────────────────
+    document.addEventListener('touchmove', evt => {
+      if (!touchDragPayload) return;
+      evt.preventDefault();          // prevent page scroll during drag
+      const touch = evt.touches[0];
+      moveTouchGhost(touch.clientX, touch.clientY);
+      const canvas = document.getElementById('scriptCanvas');
+      const cr = canvas.getBoundingClientRect();
+      if (touch.clientX >= cr.left && touch.clientX <= cr.right &&
+          touch.clientY >= cr.top  && touch.clientY <= cr.bottom) {
+        const idx = getDropIndexFromY(touch.clientY);
+        paintDropHint(idx);
+      } else {
+        clearDropHints();
+      }
+    }, { passive: false });
+
+    // ── Global touchend: perform drop ─────────────────────────────────────
+    document.addEventListener('touchend', evt => {
+      if (!touchDragPayload) return;
+      document.body.style.overflow = '';
+      removeTouchGhost();
+      const touch = evt.changedTouches[0];
+      const canvas = document.getElementById('scriptCanvas');
+      const cr = canvas.getBoundingClientRect();
+      if (touch.clientX >= cr.left && touch.clientX <= cr.right &&
+          touch.clientY >= cr.top  && touch.clientY <= cr.bottom) {
+        syncStepsFromDom();
+        const index = getDropIndexFromY(touch.clientY);
+        if (touchDragPayload.source === 'tool') {
+          if (touchDragPayload.type === 'repeat') {
+            insertRepeatPair(index);
+          } else {
+            insertStep(touchDragPayload.type, index);
+          }
+        } else if (touchDragPayload.source === 'block') {
+          const from = steps.findIndex(s => s.id === touchDragPayload.id);
+          if (from >= 0) {
+            const [moved] = steps.splice(from, 1);
+            let target = index;
+            if (from < index) target -= 1;
+            steps.splice(target, 0, moved);
+          }
+        }
+        renderList();
+      }
+      touchDragPayload = null;
+      clearDropHints();
+    });
+
+    // ── Cancel on touchcancel ─────────────────────────────────────────────
+    document.addEventListener('touchcancel', () => {
+      document.body.style.overflow = '';
+      removeTouchGhost();
+      touchDragPayload = null;
+      clearDropHints();
+    });
+  }
+
+  // Called from renderList() for each newly created block element
+  function attachBlockTouchSource(div, stepId) {
+    div.addEventListener('touchstart', evt => {
+      if (!dragDropEnabled) return;
+      const touch = evt.touches[0];
+      touchDragPayload = { source: 'block', id: stepId };
+      touchGhost = createTouchGhost(div, touch.clientX, touch.clientY);
+      document.body.style.overflow = 'hidden';
+    }, { passive: true });
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
   function renderList() {
     // Preserve any in-flight DOM changes (e.g. LED multi-select, color wheel) before
     // clearing and rebuilding the list.  Safe even when steps is empty: readBlockValues
@@ -3200,6 +3364,7 @@ void sendLogicPageStreamed() {
         dropIndex = -1;
         clearDropHints();
       });
+      attachBlockTouchSource(div, step.id);
 
       // Einrückung innerhalb Script/Repeat-Strukturen
       const all = steps;
@@ -3299,9 +3464,41 @@ void sendLogicPageStreamed() {
     return { ops, nextIndex: index, closed: false };
   }
 
+  function validateUniqueSetVariableNames(rawSteps) {
+    const seenNames = new Map();
+    for (let i = 0; i < rawSteps.length; i += 1) {
+      const step = rawSteps[i];
+      if (!step || step.op !== 'set_var') {
+        continue;
+      }
+
+      const normalized = String(step.name || '').trim().toLowerCase();
+      if (!normalized) {
+        continue;
+      }
+
+      if (seenNames.has(normalized)) {
+        return {
+          ok: false,
+          name: String(step.name || '').trim() || normalized,
+          firstIndex: seenNames.get(normalized),
+          secondIndex: i
+        };
+      }
+      seenNames.set(normalized, i);
+    }
+    return { ok: true };
+  }
+
   function buildPayload() {
     syncStepsFromDom();
     const raw = steps.map(stepRef => readBlock(stepRef.id)).filter(Boolean);
+    const uniqueNameCheck = validateUniqueSetVariableNames(raw);
+    if (!uniqueNameCheck.ok) {
+      return {
+        error: 'Variable "' + uniqueNameCheck.name + '" ist mehrfach in "Variable setzen" vorhanden.'
+      };
+    }
     if (raw.some(item => item.op === 'repeat_end')) {
       // top-level repeat_end without matching start is handled below by compileSequence return
     }
@@ -3575,9 +3772,7 @@ void sendLogicPageStreamed() {
           values: {
             name: op.name || 'var_name',
             varType: op.type || 'brightness',
-            value: op.type === 'led_mask'
-              ? ledSelectionValueFromMask(op.value)
-              : String(op.value != null ? op.value : 0)
+            value: String(op.value != null ? op.value : 0)
           }
         });
       } else if (op.op === 'change_var') {
@@ -3647,6 +3842,7 @@ void sendLogicPageStreamed() {
   syncLedCountSelect();
   syncToolbarStates();
   setupToolboxDnD();
+  setupTouchDnD();
   renderList();
   refreshLogicVariables();
   loadActiveScriptFromDevice();
@@ -4357,6 +4553,8 @@ void handleLedSave() {
   populateLedConfigFromRequest(ledConfig, ledCount);
   resetAnimationStartTimes(ledAnimationStartMs);
   ledPreviewActive = false;
+  scriptRunning = false;
+  scriptOutputActive = false;  // user explicitly switched to LED config
 
   saveLedConfig();
   applyLedState();
@@ -4547,6 +4745,7 @@ void handleScriptSave() {
 void handleScriptStop() {
   scriptRunning = false;
   scriptAllOff();
+  scriptOutputActive = true;  // keep script buffer (all off) — do NOT fall back to ledConfig
   ws2812Show();
   appendLog("Script angehalten.");
   webServer.send(204, "text/plain", "");
@@ -4555,6 +4754,7 @@ void handleScriptStop() {
 void handleScriptClear() {
   scriptRunning = false;
   scriptAllOff();
+  scriptOutputActive = false;  // cleared — allow ledConfig to take over again
   ws2812Show();
   savedScriptJson = "";
   preferences.begin(kPreferencesNamespace, false);
@@ -4611,7 +4811,7 @@ void handleVariablesUpsert() {
     if (varType == VarType::kBrightness) {
       numericValue = constrain(numericValue, 0L, 255L);
     } else if (varType == VarType::kLedMask) {
-      numericValue = constrain(numericValue, 0L, static_cast<long>(allLedMask()));
+      numericValue = constrain(numericValue, 1L, static_cast<long>(kLedMaxCount));
     } else {
       numericValue = constrain(numericValue, 0L, 65535L);
     }
@@ -4901,10 +5101,13 @@ void setup() {
   WiFi.setSleep(false);
 
   loadCredentials();
+  applyLedState();  // show all-off before loading config
   loadLedConfig();
   resetAnimationStartTimes(ledAnimationStartMs);
   resetAnimationStartTimes(previewAnimationStartMs);
-  applyLedState();
+  if (!scriptOutputActive) {
+    applyLedState();  // only apply LED config if no script was autoloaded
+  }
   configureWebServer();
   startAccessPoint();
 
@@ -4927,11 +5130,14 @@ void loop() {
 
   if (ledPreviewActive && now - lastLedPreviewMs > kLedPreviewTimeoutMs) {
     ledPreviewActive = false;
-    applyLedState();
+    if (!scriptOutputActive) {
+      applyLedState();
+    }
     appendLog("LED-Vorschau beendet.");
   }
 
-  if ((ledPreviewActive || hasAnimatedLeds(activeLedConfig(), activeLedCount())) &&
+  if (!scriptOutputActive &&
+      (ledPreviewActive || hasAnimatedLeds(activeLedConfig(), activeLedCount())) &&
       now - lastLedRenderMs >= kLedAnimationFrameMs) {
     lastLedRenderMs = now;
     applyLedState();

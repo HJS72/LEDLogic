@@ -1608,11 +1608,33 @@ void otaFromUrlTaskFn(void*) {
   constexpr size_t kChunk = 1024;
   uint8_t buf[kChunk];
   size_t written = 0;
-  while (stream->connected() || stream->available()) {
+  unsigned long lastDataMs = millis();
+  constexpr unsigned long kOtaReadTimeoutMs = 15000;
+  while (true) {
     size_t avail = stream->available();
-    if (avail == 0) { vTaskDelay(pdMS_TO_TICKS(5)); continue; }
+    if (avail == 0) {
+      if (length > 0 && written >= static_cast<size_t>(length)) {
+        break;
+      }
+      if (length <= 0 && !stream->connected()) {
+        break;
+      }
+      if (millis() - lastDataMs > kOtaReadTimeoutMs) {
+        otaUrlError = "Download-Timeout beim OTA-Update.";
+        otaUrlProgress = -2;
+        Update.abort();
+        http.end();
+        vTaskDelete(nullptr);
+        return;
+      }
+      vTaskDelay(pdMS_TO_TICKS(5));
+      continue;
+    }
+
     const size_t got = stream->readBytes(buf, min(avail, kChunk));
     if (got == 0) break;
+    lastDataMs = millis();
+
     if (Update.write(buf, got) != got) {
       otaUrlError    = "Update.write fehlgeschlagen: " + String(Update.errorString());
       otaUrlProgress = -2;
@@ -1622,7 +1644,12 @@ void otaFromUrlTaskFn(void*) {
       return;
     }
     written += got;
-    otaUrlProgress = (length > 0) ? (int)((written * 100ULL) / (size_t)length) : min((int)(written / 10240), 99);
+    if (length > 0) {
+      const int pct = static_cast<int>((written * 100ULL) / static_cast<size_t>(length));
+      otaUrlProgress = min(pct, 99);
+    } else {
+      otaUrlProgress = min(static_cast<int>(written / 10240), 99);
+    }
   }
   if (!Update.end()) {
     otaUrlError    = "Update.end fehlgeschlagen: " + String(Update.errorString());
@@ -4890,9 +4917,10 @@ void handleHostnameSave() {
   // Sanitize: only a-z, 0-9, hyphen; max 32 chars
   String sanitized;
   sanitized.reserve(name.length());
-  for (char c : name) {
+  for (size_t i = 0; i < name.length(); ++i) {
+    const unsigned char c = static_cast<unsigned char>(name.charAt(i));
     if (isalnum(c) || c == '-') {
-      sanitized += tolower(c);
+      sanitized += static_cast<char>(tolower(c));
     }
   }
   if (sanitized.isEmpty() || sanitized.length() > 32) {

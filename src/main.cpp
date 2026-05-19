@@ -4601,6 +4601,21 @@ String buildConfigPage() {
       }, 1500);
     }
 
+    function setOtaReadyMessage(labelElement, messageText) {
+      if (!labelElement) {
+        return;
+      }
+      labelElement.innerHTML = messageText + ' <a href="#" style="font-weight:700;">Reload Page</a>';
+      const reloadLink = labelElement.querySelector('a');
+      if (!reloadLink) {
+        return;
+      }
+      reloadLink.addEventListener('click', event => {
+        event.preventDefault();
+        window.location.reload();
+      });
+    }
+
     function setupHostnameSave() {
       const btn  = document.getElementById('hostname-save-btn');
       const inp  = document.getElementById('hostname-input');
@@ -4707,7 +4722,7 @@ String buildConfigPage() {
               clearInterval(poll);
               bar.style.width = '100%';
               pct.textContent = '100%';
-              label.textContent = 'Firmware installiert. Reboot starten.';
+              setOtaReadyMessage(label, 'Firmware installiert. Reboot starten.');
               if (rebootBtn) {
                 rebootBtn.style.display = 'inline-flex';
               }
@@ -4753,7 +4768,7 @@ String buildConfigPage() {
             const data = await r.json();
             if (data.ready) {
               stopUploadStatusPoll();
-              label.textContent = 'Firmware installiert. Bitte Reboot starten.';
+              setOtaReadyMessage(label, 'Firmware installiert. Bitte Reboot starten.');
               rebootBtn.style.display = 'inline-flex';
             }
           } catch (_) {
@@ -4784,7 +4799,7 @@ String buildConfigPage() {
           xhr.onload = () => {
             stopUploadStatusPoll();
             if (xhr.status >= 200 && xhr.status < 300) {
-              label.textContent = 'Firmware installiert. Bitte Reboot starten.';
+              setOtaReadyMessage(label, 'Firmware installiert. Bitte Reboot starten.');
               rebootBtn.style.display = 'inline-flex';
             } else {
               label.textContent = 'Fehler: ' + (xhr.responseText || ('HTTP ' + xhr.status));

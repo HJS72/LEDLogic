@@ -123,6 +123,9 @@ bool otaRebootPending = false;
 unsigned long otaRebootAtMs = 0;
 String otaUploadResult = "";
 String firmwareVersion = "2.000000.0000";
+volatile int  otaUrlProgress = -1;   // -1=idle, 0-100=running, 101=done, -2=error
+String        otaUrlError    = "";
+static char   otaUrlTaskBuf[512];
 bool wsReady = false;
 rmt_item32_t wsItems[kLedMaxCount * 24];
 
@@ -1566,58 +1569,71 @@ int compareVersionsAlphabetical(const String& leftRaw, const String& rightRaw) {
   return left.compareTo(right);
 }
 
-bool scheduleOtaFromUrl(const String& url, String& message) {
-  if (WiFi.status() != WL_CONNECTED) {
-    message = "OTA von URL nur mit aktiver WLAN-Verbindung möglich.";
-    return false;
-  }
-
+void otaFromUrlTaskFn(void*) {
   HTTPClient http;
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  if (!http.begin(url)) {
-    message = "HTTP begin fehlgeschlagen.";
-    return false;
+  if (!http.begin(String(otaUrlTaskBuf))) {
+    otaUrlError    = "HTTP begin fehlgeschlagen.";
+    otaUrlProgress = -2;
+    vTaskDelete(nullptr);
+    return;
   }
-
   const int code = http.GET();
   if (code != HTTP_CODE_OK) {
-    message = "HTTP Fehler beim Download: " + String(code);
+    otaUrlError    = "HTTP Fehler: " + String(code);
+    otaUrlProgress = -2;
     http.end();
-    return false;
+    vTaskDelete(nullptr);
+    return;
   }
-
   const int length = http.getSize();
   WiFiClient* stream = http.getStreamPtr();
-
   if (!Update.begin(length > 0 ? length : UPDATE_SIZE_UNKNOWN)) {
-    message = "Update.begin fehlgeschlagen: " + String(Update.errorString());
+    otaUrlError    = "Update.begin fehlgeschlagen: " + String(Update.errorString());
+    otaUrlProgress = -2;
     http.end();
-    return false;
+    vTaskDelete(nullptr);
+    return;
   }
-
-  const size_t written = Update.writeStream(*stream);
-  if (length > 0 && written != static_cast<size_t>(length)) {
-    message = "Unvollständiger Download: " + String(written) + " von " + String(length);
-    Update.abort();
-    http.end();
-    return false;
+  constexpr size_t kChunk = 1024;
+  uint8_t buf[kChunk];
+  size_t written = 0;
+  while (stream->connected() || stream->available()) {
+    size_t avail = stream->available();
+    if (avail == 0) { vTaskDelay(pdMS_TO_TICKS(5)); continue; }
+    const size_t got = stream->readBytes(buf, min(avail, kChunk));
+    if (got == 0) break;
+    if (Update.write(buf, got) != got) {
+      otaUrlError    = "Update.write fehlgeschlagen: " + String(Update.errorString());
+      otaUrlProgress = -2;
+      Update.abort();
+      http.end();
+      vTaskDelete(nullptr);
+      return;
+    }
+    written += got;
+    otaUrlProgress = (length > 0) ? (int)((written * 100ULL) / (size_t)length) : min((int)(written / 10240), 99);
   }
-
   if (!Update.end()) {
-    message = "Update.end fehlgeschlagen: " + String(Update.errorString());
+    otaUrlError    = "Update.end fehlgeschlagen: " + String(Update.errorString());
+    otaUrlProgress = -2;
     http.end();
-    return false;
+    vTaskDelete(nullptr);
+    return;
   }
-
   if (!Update.isFinished()) {
-    message = "Update nicht vollständig.";
+    otaUrlError    = "Update nicht vollständig.";
+    otaUrlProgress = -2;
     http.end();
-    return false;
+    vTaskDelete(nullptr);
+    return;
   }
-
   http.end();
-  message = "OTA erfolgreich, Neustart wird ausgeführt.";
-  return true;
+  otaUploadResult  = "OTA erfolgreich, Neustart wird ausgeführt.";
+  otaRebootPending = true;
+  otaRebootAtMs    = millis() + 2000;
+  otaUrlProgress   = 101;
+  vTaskDelete(nullptr);
 }
 
 String buildLedCardsHtml() {
@@ -4459,13 +4475,112 @@ String buildConfigPage() {
     document.getElementById('scan-trigger').addEventListener('click', refreshScan);
     setupPasswordToggle();
     setupOtaCheck();
+    setupOtaUpdateUrl();
     refreshStatus();
     setInterval(refreshStatus, 3000);
 
     // V2 Variables UI Initialization
     resetVariableForm();
     refreshVariables();
+
+    function setupOtaUpdateUrl() {
+      const form = document.querySelector('form[action="/ota/update_url"]');
+      if (!form) return;
+      form.addEventListener('submit', async evt => {
+        evt.preventDefault();
+        const url = document.getElementById('bin-url').value.trim();
+        if (!url) return;
+        const overlay = document.getElementById('ota-progress-overlay');
+        const bar     = document.getElementById('ota-progress-bar');
+        const label   = document.getElementById('ota-progress-label');
+        const pct     = document.getElementById('ota-progress-pct');
+        overlay.style.display = 'flex';
+        bar.style.width = '0%';
+        bar.style.background = 'linear-gradient(90deg,#2f8eff,#1a5fd9)';
+        label.textContent = 'Update wird gestartet\u2026';
+        pct.textContent = '0%';
+        try {
+          const resp = await fetch('/ota/update_url', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: 'url=' + encodeURIComponent(url)
+          });
+          if (!resp.ok) {
+            const data = await resp.json().catch(() => ({}));
+            label.textContent = 'Fehler: ' + (data.error || resp.statusText);
+            bar.style.background = '#e05555';
+            setTimeout(() => { overlay.style.display = 'none'; }, 4000);
+            return;
+          }
+        } catch (err) {
+          label.textContent = 'Verbindungsfehler beim Starten.';
+          bar.style.background = '#e05555';
+          setTimeout(() => { overlay.style.display = 'none'; }, 4000);
+          return;
+        }
+        const poll = setInterval(async () => {
+          try {
+            const resp = await fetch('/ota/progress');
+            const data = await resp.json();
+            const p = data.progress;
+            if (p === -2) {
+              clearInterval(poll);
+              label.textContent = 'Fehler: ' + (data.error || 'Unbekannter Fehler');
+              bar.style.background = '#e05555';
+              pct.textContent = '';
+              setTimeout(() => { overlay.style.display = 'none'; }, 5000);
+              return;
+            }
+            if (p === 101) {
+              clearInterval(poll);
+              bar.style.width = '100%';
+              pct.textContent = '100%';
+              label.textContent = 'Erfolgreich! Warte auf Neustart\u2026';
+              // Poll until device is back online, then redirect to /
+              const waitOnline = setInterval(async () => {
+                try {
+                  const r = await fetch('/status', { cache: 'no-store' });
+                  if (r.ok) {
+                    clearInterval(waitOnline);
+                    window.location.href = '/';
+                  }
+                } catch (_) { /* still rebooting */ }
+              }, 1500);
+              return;
+            }
+            if (p >= 0) {
+              bar.style.width = p + '%';
+              pct.textContent = p + '%';
+              label.textContent = 'Firmware wird heruntergeladen\u2026';
+            }
+          } catch (e) {
+            clearInterval(poll);
+            label.textContent = 'Neustart l\u00e4uft \u2013 bitte warten\u2026';
+            const waitOnline = setInterval(async () => {
+              try {
+                const r = await fetch('/status', { cache: 'no-store' });
+                if (r.ok) {
+                  clearInterval(waitOnline);
+                  window.location.href = '/';
+                }
+              } catch (_) { /* still rebooting */ }
+            }, 1500);
+          }
+        }, 500);
+      });
+    }
   </script>
+
+  <div id="ota-progress-overlay" style="display:none;position:fixed;inset:0;background:rgba(20,32,51,0.62);z-index:999;align-items:center;justify-content:center;">
+    <div style="background:#fff;border-radius:16px;padding:28px 32px;width:min(380px,90vw);display:grid;gap:14px;box-shadow:0 20px 46px rgba(20,32,51,0.34);">
+      <h3 style="margin:0;font-size:1.1rem;">Firmware wird installiert</h3>
+      <p id="ota-progress-label" style="margin:0;font-size:0.9rem;color:#4e5874;">Download l\u00e4uft\u2026</p>
+      <div style="background:#e8eef8;border-radius:999px;height:14px;overflow:hidden;">
+        <div id="ota-progress-bar" style="height:100%;width:0%;background:linear-gradient(90deg,#2f8eff,#1a5fd9);border-radius:999px;transition:width 0.3s ease;"></div>
+      </div>
+      <p id="ota-progress-pct" style="margin:0;text-align:right;font-size:0.9rem;font-weight:700;color:#2f8eff;">0%</p>
+    </div>
+  </div>
 </body>
 </html>)HTML";
 
@@ -4913,23 +5028,29 @@ void handleOtaCheck() {
 
 void handleOtaUpdateUrl() {
   if (!webServer.hasArg("url")) {
-    webServer.send(400, "text/plain", "url fehlt");
+    webServer.send(400, "application/json", "{\"error\":\"url fehlt\"}");
     return;
   }
-
-  String message;
-  const bool ok = scheduleOtaFromUrl(webServer.arg("url"), message);
-  appendLog("OTA URL: " + message);
-  otaUploadResult = message;
-
-  if (!ok) {
-    webServer.send(500, "text/plain", message);
+  if (otaUrlProgress >= 0 && otaUrlProgress <= 100) {
+    webServer.send(409, "application/json", "{\"error\":\"OTA l\\u00e4uft bereits\"}");
     return;
   }
+  if (WiFi.status() != WL_CONNECTED) {
+    webServer.send(409, "application/json", "{\"error\":\"Kein WLAN\"}");
+    return;
+  }
+  webServer.arg("url").toCharArray(otaUrlTaskBuf, sizeof(otaUrlTaskBuf));
+  otaUrlProgress = 0;
+  otaUrlError    = "";
+  appendLog("OTA URL gestartet: " + webServer.arg("url"));
+  xTaskCreate(otaFromUrlTaskFn, "ota_url", 8192, nullptr, 1, nullptr);
+  webServer.send(200, "application/json", "{\"status\":\"started\"}");
+}
 
-  otaRebootPending = true;
-  otaRebootAtMs = millis() + 1500;
-  webServer.send(200, "text/plain", message);
+void handleOtaProgress() {
+  String json = "{\"progress\":" + String(otaUrlProgress)
+              + ",\"error\":\"" + otaUrlError + "\"}";
+  webServer.send(200, "application/json", json);
 }
 
 void handleOtaUploadFinish() {
@@ -5030,6 +5151,7 @@ void configureWebServer() {
   webServer.on("/led/save", HTTP_POST, handleLedSave);
   webServer.on("/ota/check", HTTP_GET, handleOtaCheck);
   webServer.on("/ota/update_url", HTTP_POST, handleOtaUpdateUrl);
+  webServer.on("/ota/progress", HTTP_GET, handleOtaProgress);
   webServer.on("/ota/upload", HTTP_POST, handleOtaUploadFinish, handleOtaUploadData);
 
   webServer.on("/generate_204", HTTP_ANY, handleCaptiveProbe);

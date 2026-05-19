@@ -10,7 +10,7 @@ REPO_RAW_BASE = "https://raw.githubusercontent.com/HJS72/LEDLogic/main"
 
 def build_version_string():
     now = datetime.now()
-    return f"1.{now:%y%m%d}.{now:%H%M}"
+    return f"2.{now:%y%m%d}.{now:%H%M}"
 
 
 BUILD_VERSION = build_version_string()

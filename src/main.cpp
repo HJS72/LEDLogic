@@ -39,17 +39,48 @@ constexpr size_t kMaxScriptJsonLen = 4096;
 constexpr char kScriptDir[] = "/scripts";
 constexpr uint8_t kScriptMaxNameLen = 32;
 constexpr uint8_t kMaxSavedScripts = 20;
+constexpr uint8_t kMaxVariables = 16;
 
 // ---- Script system ----
-enum class ScriptOpType : uint8_t { kSet = 0, kWait = 1, kFade = 2, kAllOff = 3, kBrightness = 4 };
+enum class ScriptOpType : uint8_t { 
+  kSet = 0, 
+  kWait = 1, 
+  kFade = 2, 
+  kAllOff = 3, 
+  kBrightness = 4,
+  // V2: Variable operations
+  kSetVariable = 5,      // var_name = value
+  kChangeVariable = 6    // var_name += value (or -=, *=, etc)
+};
+
+enum class VarType : uint8_t { 
+  kLedMask = 0,          // bitmask 0-4095
+  kBrightness = 1,       // 0-255
+  kDuration = 2,         // milliseconds 0-65535
+  kColor = 3             // RGB color
+};
+
+struct Variable {
+  char name[16];         // variable identifier
+  VarType type;
+  uint16_t value;        // for ledMask, brightness, duration
+  uint8_t r, g, b;       // only used for kColor type
+};
 
 struct ScriptStep {
   ScriptOpType op;
-  uint16_t ledMask;      // bitmask for LED selection
+  uint16_t ledMask;      // bitmask for LED selection (0 = use ledsVarName)
   uint8_t r1, g1, b1;
   uint8_t r2, g2, b2;
   uint8_t brightness;    // 0-255
   uint32_t durationMs;
+  
+  // V2: Variable operation fields
+  char varName[16];
+  char ledsVarName[16];  // if non-empty, resolve ledMask dynamically from this variable
+  VarType varType;
+  uint8_t varIndex;      // index into variables array
+  uint8_t operation;     // 0=set, 1=add, 2=subtract, 3=multiply
 };
 
 struct LedConfig {
@@ -91,7 +122,7 @@ unsigned long lastLedRenderMs = 0;
 bool otaRebootPending = false;
 unsigned long otaRebootAtMs = 0;
 String otaUploadResult = "";
-String firmwareVersion = "1.000000.0000";
+String firmwareVersion = "2.000000.0000";
 bool wsReady = false;
 rmt_item32_t wsItems[kLedMaxCount * 24];
 
@@ -102,18 +133,80 @@ bool scriptLoop = false;
 bool scriptRunning = false;
 uint8_t scriptCurrentStep = 0;
 unsigned long scriptStepStartMs = 0;
+
+// V2: Variables runtime state
+Variable scriptVariables[kMaxVariables];
+uint8_t scriptVariableCount = 0;
+
 // Script output buffer (written by interpreter, read by ws2812Show)
 uint8_t scriptR[kLedMaxCount] = {};
 uint8_t scriptG[kLedMaxCount] = {};
 uint8_t scriptB[kLedMaxCount] = {};
 uint8_t scriptBr[kLedMaxCount] = {};
 bool scriptEnabled[kLedMaxCount] = {};
+// True while script mode is active (running or stopped-but-not-cleared).
+// ws2812Show uses script buffers as long as this is true.
+bool scriptOutputActive = false;
 String savedScriptJson = "";  // persisted JSON
 
 void saveLedConfig();
 bool parseHexColor(const String& hex, uint8_t& r, uint8_t& g, uint8_t& b);
 bool parseAndRunScript(const String& json);
 bool validateScriptJson(const String& json);
+void loadPersistedVariables();
+void persistVariables();
+String jsonEscape(const String& input);
+static uint16_t parseLedMaskValue(const String& rawValue, const uint16_t defaultMask);
+
+static const char* varTypeToKey(const VarType type) {
+  switch (type) {
+    case VarType::kLedMask:
+      return "led_mask";
+    case VarType::kBrightness:
+      return "brightness";
+    case VarType::kDuration:
+      return "duration";
+    case VarType::kColor:
+      return "color";
+  }
+  return "duration";
+}
+
+static bool parseVarType(const String& raw, VarType& type) {
+  if (raw == "led_mask") {
+    type = VarType::kLedMask;
+    return true;
+  }
+  if (raw == "brightness") {
+    type = VarType::kBrightness;
+    return true;
+  }
+  if (raw == "duration") {
+    type = VarType::kDuration;
+    return true;
+  }
+  if (raw == "color") {
+    type = VarType::kColor;
+    return true;
+  }
+  return false;
+}
+
+static bool isValidVariableName(const String& rawName) {
+  if (rawName.isEmpty() || rawName.length() >= 16) {
+    return false;
+  }
+  if (!isAlpha(rawName.charAt(0)) && rawName.charAt(0) != '_') {
+    return false;
+  }
+  for (size_t i = 1; i < rawName.length(); ++i) {
+    const char ch = rawName.charAt(i);
+    if (!isAlphaNumeric(ch) && ch != '_') {
+      return false;
+    }
+  }
+  return true;
+}
 
 void copyLedConfigArray(const LedConfig* source, LedConfig* target) {
   for (uint8_t i = 0; i < kLedMaxCount; ++i) {
@@ -327,7 +420,7 @@ void ws2812Show() {
     uint8_t gg = 0;
     uint8_t bb = 0;
 
-    if (scriptRunning) {
+    if (scriptOutputActive) {
       if (scriptEnabled[led]) {
         rr = (static_cast<uint16_t>(scriptR[led]) * scriptBr[led]) / 255;
         gg = (static_cast<uint16_t>(scriptG[led]) * scriptBr[led]) / 255;
@@ -412,9 +505,9 @@ static uint16_t parseLedMaskFromCsv(const String& csv) {
 static uint16_t parseLedMaskFromOp(const String& opJson, const uint16_t defaultMask) {
   const String ledsCsv = extractJsonStr(opJson, "leds");
   if (!ledsCsv.isEmpty()) {
-    const uint16_t csvMask = parseLedMaskFromCsv(ledsCsv);
-    if (csvMask != 0) {
-      return csvMask;
+    const uint16_t resolvedMask = parseLedMaskValue(ledsCsv, 0);
+    if (resolvedMask != 0) {
+      return resolvedMask;
     }
   }
 
@@ -430,6 +523,237 @@ static uint16_t parseLedMaskFromOp(const String& opJson, const uint16_t defaultM
 
 static uint16_t allLedMask() {
   return static_cast<uint16_t>((1UL << kLedMaxCount) - 1U);
+}
+
+static int findVariableIndex(const String& varName) {
+  for (uint8_t i = 0; i < scriptVariableCount; ++i) {
+    if (String(scriptVariables[i].name) == varName) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+static bool createOrUpdateVariable(const String& varName, VarType type, uint16_t value, 
+                                    uint8_t r = 0, uint8_t g = 0, uint8_t b = 0) {
+  int idx = findVariableIndex(varName);
+  if (idx >= 0) {
+    // Update existing
+    scriptVariables[idx].type = type;
+    scriptVariables[idx].value = value;
+    scriptVariables[idx].r = r;
+    scriptVariables[idx].g = g;
+    scriptVariables[idx].b = b;
+    return true;
+  }
+  
+  // Create new if space available
+  if (scriptVariableCount < kMaxVariables) {
+    idx = scriptVariableCount++;
+    strncpy(scriptVariables[idx].name, varName.c_str(), sizeof(scriptVariables[idx].name) - 1);
+    scriptVariables[idx].name[sizeof(scriptVariables[idx].name) - 1] = '\0';
+    scriptVariables[idx].type = type;
+    scriptVariables[idx].value = value;
+    scriptVariables[idx].r = r;
+    scriptVariables[idx].g = g;
+    scriptVariables[idx].b = b;
+    return true;
+  }
+  return false;
+}
+
+static bool deleteVariable(const String& varName) {
+  const int idx = findVariableIndex(varName);
+  if (idx < 0) {
+    return false;
+  }
+  for (uint8_t i = idx; i + 1 < scriptVariableCount; ++i) {
+    scriptVariables[i] = scriptVariables[i + 1];
+  }
+  --scriptVariableCount;
+  memset(&scriptVariables[scriptVariableCount], 0, sizeof(Variable));
+  return true;
+}
+
+static bool getVariable(const String& varName, Variable& outVar) {
+  const int idx = findVariableIndex(varName);
+  if (idx < 0) {
+    return false;
+  }
+  outVar = scriptVariables[idx];
+  return true;
+}
+
+static uint16_t getVariableValue(const String& varName, uint16_t defaultValue = 0) {
+  int idx = findVariableIndex(varName);
+  if (idx >= 0) {
+    return scriptVariables[idx].value;
+  }
+  return defaultValue;
+}
+
+static void clearVariables() {
+  scriptVariableCount = 0;
+  memset(scriptVariables, 0, sizeof(scriptVariables));
+}
+
+static String variableJsonObject(const Variable& var) {
+  String json = "{";
+  json += "\"name\":\"" + jsonEscape(String(var.name)) + "\",";
+  json += "\"type\":\"" + String(varTypeToKey(var.type)) + "\",";
+  json += "\"value\":" + String(var.value) + ",";
+  json += "\"hex\":\"#";
+  char hexBuf[7];
+  snprintf(hexBuf, sizeof(hexBuf), "%02x%02x%02x", var.r, var.g, var.b);
+  json += String(hexBuf);
+  json += "\",";
+  json += "\"r\":" + String(var.r) + ",";
+  json += "\"g\":" + String(var.g) + ",";
+  json += "\"b\":" + String(var.b);
+  json += "}";
+  return json;
+}
+
+static String collectVariablesAsJson() {
+  String json = "[";
+  for (uint8_t i = 0; i < scriptVariableCount; ++i) {
+    if (i > 0) {
+      json += ",";
+    }
+    json += variableJsonObject(scriptVariables[i]);
+  }
+  json += "]";
+  return json;
+}
+
+void persistVariables() {
+  preferences.begin(kPreferencesNamespace, false);
+  preferences.putString("vars", collectVariablesAsJson());
+  preferences.end();
+}
+
+static bool parseAndStoreVariableObject(const String& varJson) {
+  const String varName = extractJsonStr(varJson, "name");
+  const String varTypeStr = extractJsonStr(varJson, "type");
+  const String varValueStr = extractJsonStr(varJson, "value");
+
+  if (!isValidVariableName(varName)) {
+    return false;
+  }
+
+  VarType varType = VarType::kDuration;
+  if (!parseVarType(varTypeStr, varType)) {
+    return false;
+  }
+
+  uint16_t value = 0;
+  uint8_t r = 0;
+  uint8_t g = 0;
+  uint8_t b = 0;
+
+  if (varType == VarType::kColor) {
+    if (!parseHexColor(varValueStr, r, g, b)) {
+      const String hexField = extractJsonStr(varJson, "hex");
+      if (!parseHexColor(hexField, r, g, b)) {
+        return false;
+      }
+    }
+  } else {
+    value = static_cast<uint16_t>(constrain(varValueStr.toInt(), 0, 65535));
+    if (varType == VarType::kBrightness && value > 255) {
+      value = 255;
+    }
+    if (varType == VarType::kLedMask) {
+      value = static_cast<uint16_t>(constrain(value, static_cast<uint16_t>(1), static_cast<uint16_t>(kLedMaxCount)));
+    }
+  }
+
+  return createOrUpdateVariable(varName, varType, value, r, g, b);
+}
+
+static void parseVariablesArrayIntoStore(const String& arrayJson) {
+  int pos = 0;
+  const int jsonLen = arrayJson.length();
+  while (pos < jsonLen && scriptVariableCount < kMaxVariables) {
+    const int varStart = arrayJson.indexOf('{', pos);
+    if (varStart < 0) {
+      break;
+    }
+    const int varEnd = arrayJson.indexOf('}', varStart);
+    if (varEnd < 0) {
+      break;
+    }
+    parseAndStoreVariableObject(arrayJson.substring(varStart, varEnd + 1));
+    pos = varEnd + 1;
+  }
+}
+
+void loadPersistedVariables() {
+  clearVariables();
+  preferences.begin(kPreferencesNamespace, true);
+  const String stored = preferences.getString("vars", "[]");
+  preferences.end();
+  parseVariablesArrayIntoStore(stored);
+}
+
+static bool resolveVariableReference(const String& rawValue, Variable& outVar) {
+  if (!rawValue.startsWith("$")) {
+    return false;
+  }
+  const String varName = rawValue.substring(1);
+  return getVariable(varName, outVar);
+}
+
+static uint16_t parseLedMaskValue(const String& rawValue, const uint16_t defaultMask) {
+  if (rawValue.isEmpty()) {
+    return defaultMask;
+  }
+
+  Variable var = {};
+  if (resolveVariableReference(rawValue, var) && var.type == VarType::kLedMask) {
+    // led_mask variables are interpreted as 1-based LED numbers in scripts.
+    if (var.value >= 1 && var.value <= kLedMaxCount) {
+      return static_cast<uint16_t>(1U << (var.value - 1));
+    }
+    // Backward compatibility for older persisted values that stored bitmasks.
+    return static_cast<uint16_t>(var.value & allLedMask());
+  }
+
+  const uint16_t csvMask = parseLedMaskFromCsv(rawValue);
+  return csvMask == 0 ? defaultMask : csvMask;
+}
+
+static uint8_t parseBrightnessValue(const String& rawValue) {
+  Variable var = {};
+  if (resolveVariableReference(rawValue, var) && var.type == VarType::kBrightness) {
+    return static_cast<uint8_t>(constrain(var.value, 0, 255));
+  }
+  const int brPercent = rawValue.toInt();
+  return static_cast<uint8_t>(constrain(brPercent * 255 / 100, 0, 255));
+}
+
+static uint32_t parseDurationValueMs(const String& rawValue) {
+  Variable var = {};
+  if (resolveVariableReference(rawValue, var) && var.type == VarType::kDuration) {
+    return var.value;
+  }
+  return static_cast<uint32_t>(rawValue.toFloat() * 1000.0f);
+}
+
+static bool parseColorValue(const String& rawValue, uint8_t& r, uint8_t& g, uint8_t& b) {
+  Variable var = {};
+  if (resolveVariableReference(rawValue, var) && var.type == VarType::kColor) {
+    r = var.r;
+    g = var.g;
+    b = var.b;
+    return true;
+  }
+  return parseHexColor(rawValue, r, g, b);
+}
+
+static void copyVariableName(char* target, const String& value) {
+  strncpy(target, value.c_str(), 15);
+  target[15] = '\0';
 }
 
 static void scriptAllOff() {
@@ -450,6 +774,17 @@ static void scriptAllOffMask(const uint16_t ledMask) {
 }
 
 bool parseAndRunScript(const String& json) {
+  loadPersistedVariables();
+
+  const int varsStart = json.indexOf("\"vars\"");
+  if (varsStart >= 0) {
+    const int varsArrayStart = json.indexOf('[', varsStart);
+    const int varsArrayEnd = json.indexOf(']', varsArrayStart);
+    if (varsArrayStart >= 0 && varsArrayEnd > varsArrayStart) {
+      parseVariablesArrayIntoStore(json.substring(varsArrayStart, varsArrayEnd + 1));
+    }
+  }
+
   // Parse "loop"
   const String loopVal = extractJsonStr(json, "loop");
   scriptLoop = (loopVal == "true" || loopVal == "1");
@@ -475,31 +810,67 @@ bool parseAndRunScript(const String& json) {
     ScriptStep step = {};
     bool valid = true;
 
+    // Helper: parse LED selection, storing variable name for dynamic resolution
+    auto parseLedSelection = [&](const uint16_t defaultMask) {
+      const String ledsStr = extractJsonStr(opJson, "leds");
+      if (ledsStr.startsWith("$")) {
+        copyVariableName(step.ledsVarName, ledsStr.substring(1));
+        step.ledMask = defaultMask;  // fallback if variable not found at tick time
+      } else {
+        step.ledsVarName[0] = '\0';
+        step.ledMask = parseLedMaskFromOp(opJson, defaultMask);
+      }
+    };
+
     if (opType == "set") {
       step.op = ScriptOpType::kSet;
-      step.ledMask = parseLedMaskFromOp(opJson, static_cast<uint16_t>(1U));
-      parseHexColor(extractJsonStr(opJson, "color"), step.r1, step.g1, step.b1);
-      const int br = extractJsonStr(opJson, "br").toInt();
-      step.brightness = static_cast<uint8_t>(constrain(br * 255 / 100, 0, 255));
+      parseLedSelection(static_cast<uint16_t>(1U));
+      valid = parseColorValue(extractJsonStr(opJson, "color"), step.r1, step.g1, step.b1);
+      step.brightness = parseBrightnessValue(extractJsonStr(opJson, "br"));
     } else if (opType == "wait") {
       step.op = ScriptOpType::kWait;
-      step.durationMs = static_cast<uint32_t>(extractJsonStr(opJson, "s").toFloat() * 1000.0f);
+      step.durationMs = parseDurationValueMs(extractJsonStr(opJson, "s"));
     } else if (opType == "brightness") {
       step.op = ScriptOpType::kBrightness;
-      step.ledMask = parseLedMaskFromOp(opJson, static_cast<uint16_t>(1U));
-      const int br = extractJsonStr(opJson, "br").toInt();
-      step.brightness = static_cast<uint8_t>(constrain(br * 255 / 100, 0, 255));
+      parseLedSelection(static_cast<uint16_t>(1U));
+      step.brightness = parseBrightnessValue(extractJsonStr(opJson, "br"));
     } else if (opType == "fade") {
       step.op = ScriptOpType::kFade;
-      step.ledMask = parseLedMaskFromOp(opJson, static_cast<uint16_t>(1U));
-      parseHexColor(extractJsonStr(opJson, "from"), step.r1, step.g1, step.b1);
-      parseHexColor(extractJsonStr(opJson, "to"), step.r2, step.g2, step.b2);
-      step.durationMs = static_cast<uint32_t>(extractJsonStr(opJson, "s").toFloat() * 1000.0f);
-      const int br = extractJsonStr(opJson, "br").toInt();
-      step.brightness = static_cast<uint8_t>(constrain(br * 255 / 100, 0, 255));
+      parseLedSelection(static_cast<uint16_t>(1U));
+      valid = parseColorValue(extractJsonStr(opJson, "from"), step.r1, step.g1, step.b1) &&
+              parseColorValue(extractJsonStr(opJson, "to"), step.r2, step.g2, step.b2);
+      step.durationMs = parseDurationValueMs(extractJsonStr(opJson, "s"));
+      step.brightness = parseBrightnessValue(extractJsonStr(opJson, "br"));
     } else if (opType == "all_off") {
       step.op = ScriptOpType::kAllOff;
-      step.ledMask = parseLedMaskFromOp(opJson, allLedMask());
+      parseLedSelection(allLedMask());
+    } else if (opType == "set_var") {
+      const String varName = extractJsonStr(opJson, "name");
+      const String varTypeRaw = extractJsonStr(opJson, "type");
+      step.op = ScriptOpType::kSetVariable;
+      step.operation = 0;
+      valid = isValidVariableName(varName) && parseVarType(varTypeRaw, step.varType);
+      if (valid) {
+        copyVariableName(step.varName, varName);
+        if (step.varType == VarType::kColor) {
+          valid = parseColorValue(extractJsonStr(opJson, "value"), step.r1, step.g1, step.b1);
+        } else {
+          step.durationMs = constrain(extractJsonStr(opJson, "value").toInt(), 0, 65535);
+        }
+      }
+    } else if (opType == "change_var") {
+      const String varName = extractJsonStr(opJson, "name");
+      step.op = ScriptOpType::kChangeVariable;
+      valid = isValidVariableName(varName);
+      if (valid) {
+        copyVariableName(step.varName, varName);
+      }
+      const String opTypeStr = extractJsonStr(opJson, "op_type");
+      if (opTypeStr == "add") step.operation = 1;
+      else if (opTypeStr == "subtract") step.operation = 2;
+      else if (opTypeStr == "multiply") step.operation = 3;
+      else step.operation = 0;  // default to set
+      step.durationMs = constrain(extractJsonStr(opJson, "value").toInt(), 0, 65535);
     } else {
       valid = false;
     }
@@ -511,11 +882,11 @@ bool parseAndRunScript(const String& json) {
   }
 
   if (scriptStepCount == 0) return false;
-
   scriptAllOff();
   scriptCurrentStep = 0;
   scriptStepStartMs = millis();
   scriptRunning = true;
+  scriptOutputActive = true;
 
   // Execute first SET/ALLOFF immediately
   const ScriptStep& first = scriptSteps[0];
@@ -556,7 +927,8 @@ bool validateScriptJson(const String& json) {
     const String opJson = json.substring(opStart, opEnd + 1);
     const String opType = extractJsonStr(opJson, "op");
     const bool valid = opType == "set" || opType == "wait" || opType == "brightness" ||
-                       opType == "fade" || opType == "all_off";
+               opType == "fade" || opType == "all_off" || opType == "set_var" ||
+               opType == "change_var";
     if (!valid) {
       return false;
     }
@@ -566,6 +938,19 @@ bool validateScriptJson(const String& json) {
   }
 
   return stepCount > 0;
+}
+
+static uint16_t resolveStepLedMask(const ScriptStep& step) {
+  if (step.ledsVarName[0] == '\0') {
+    return step.ledMask;
+  }
+  Variable var = {};
+  if (getVariable(String(step.ledsVarName), var) && var.type == VarType::kLedMask) {
+    if (var.value >= 1 && var.value <= kLedMaxCount) {
+      return static_cast<uint16_t>(1U << (var.value - 1));
+    }
+  }
+  return step.ledMask;  // fallback to parse-time default
 }
 
 // Called from loop(): advance script state machine
@@ -578,9 +963,10 @@ void tickScript() {
   bool advance = false;
 
   switch (step.op) {
-    case ScriptOpType::kSet:
+    case ScriptOpType::kSet: {
+      const uint16_t ledMask = resolveStepLedMask(step);
       for (uint8_t led = 0; led < kLedMaxCount; ++led) {
-        if ((step.ledMask & static_cast<uint16_t>(1U << led)) == 0) {
+        if ((ledMask & static_cast<uint16_t>(1U << led)) == 0) {
           continue;
         }
         scriptEnabled[led] = true;
@@ -592,9 +978,10 @@ void tickScript() {
       ws2812Show();
       advance = true;
       break;
+    }
 
     case ScriptOpType::kAllOff:
-      scriptAllOffMask(step.ledMask);
+      scriptAllOffMask(resolveStepLedMask(step));
       ws2812Show();
       advance = true;
       break;
@@ -605,9 +992,10 @@ void tickScript() {
       }
       break;
 
-    case ScriptOpType::kBrightness:
+    case ScriptOpType::kBrightness: {
+      const uint16_t ledMask = resolveStepLedMask(step);
       for (uint8_t led = 0; led < kLedMaxCount; ++led) {
-        if ((step.ledMask & static_cast<uint16_t>(1U << led)) == 0) {
+        if ((ledMask & static_cast<uint16_t>(1U << led)) == 0) {
           continue;
         }
         scriptEnabled[led] = true;
@@ -616,11 +1004,13 @@ void tickScript() {
       ws2812Show();
       advance = true;
       break;
+    }
 
-    case ScriptOpType::kFade:
+    case ScriptOpType::kFade: {
+      const uint16_t ledMask = resolveStepLedMask(step);
       if (step.durationMs == 0 || elapsed >= step.durationMs) {
         for (uint8_t led = 0; led < kLedMaxCount; ++led) {
-          if ((step.ledMask & static_cast<uint16_t>(1U << led)) == 0) {
+          if ((ledMask & static_cast<uint16_t>(1U << led)) == 0) {
             continue;
           }
           scriptEnabled[led] = true;
@@ -634,7 +1024,7 @@ void tickScript() {
       } else {
         const uint32_t t256 = (elapsed * 256UL) / step.durationMs;
         for (uint8_t led = 0; led < kLedMaxCount; ++led) {
-          if ((step.ledMask & static_cast<uint16_t>(1U << led)) == 0) {
+          if ((ledMask & static_cast<uint16_t>(1U << led)) == 0) {
             continue;
           }
           scriptEnabled[led] = true;
@@ -646,6 +1036,55 @@ void tickScript() {
         ws2812Show();
       }
       break;
+    }
+
+    case ScriptOpType::kSetVariable: {
+      const String varName(step.varName);
+      if (step.varType == VarType::kColor) {
+        createOrUpdateVariable(varName, step.varType, 0, step.r1, step.g1, step.b1);
+      } else {
+        uint16_t numericValue = static_cast<uint16_t>(step.durationMs);
+        if (step.varType == VarType::kBrightness && numericValue > 255) {
+          numericValue = 255;
+        }
+        if (step.varType == VarType::kLedMask) {
+          numericValue = constrain(numericValue, static_cast<uint16_t>(1), static_cast<uint16_t>(kLedMaxCount));
+        }
+        createOrUpdateVariable(varName, step.varType, numericValue);
+      }
+      advance = true;
+      break;
+    }
+
+    case ScriptOpType::kChangeVariable: {
+      const String varName(step.varName);
+      Variable var = {};
+      if (getVariable(varName, var) && var.type != VarType::kColor) {
+        long nextValue = var.value;
+        if (step.operation == 1) {
+          nextValue += static_cast<long>(step.durationMs);
+        } else if (step.operation == 2) {
+          nextValue -= static_cast<long>(step.durationMs);
+        } else if (step.operation == 3) {
+          nextValue *= static_cast<long>(step.durationMs);
+        } else {
+          nextValue = static_cast<long>(step.durationMs);
+        }
+
+        long maxValue = 65535;
+        if (var.type == VarType::kBrightness) {
+          maxValue = 255;
+        }
+        if (var.type == VarType::kLedMask) {
+          maxValue = kLedMaxCount;
+        }
+        const long minValue = (var.type == VarType::kLedMask) ? 1L : 0L;
+        nextValue = constrain(nextValue, minValue, maxValue);
+        createOrUpdateVariable(varName, var.type, static_cast<uint16_t>(nextValue), var.r, var.g, var.b);
+      }
+      advance = true;
+      break;
+    }
   }
 
   if (advance) {
@@ -955,6 +1394,7 @@ void loadLedConfig() {
   }
 
   // Load script
+  loadPersistedVariables();
   preferences.begin(kPreferencesNamespace, true);
   savedScriptJson = preferences.getString("script", "");
   preferences.end();
@@ -1348,10 +1788,13 @@ void sendLogicPageStreamed() {
     .block-repeat_start, .tool-repeat_start { background:#f7f3ff; border-left:6px solid #7c58c9; }
     .block-repeat_end, .tool-repeat_end { background:#f2edff; border-left:6px solid #5d40a8; }
     .block-all_off, .tool-all_off { background:#fff1f1; border-left:6px solid #d85a5a; }
+    .block-set_variable, .tool-set_variable,
+    .block-change_variable, .tool-change_variable { background:#eefbf5; border-left:6px solid #2f9d68; }
     .block-script_start { background:#e9f5ef; border-left:6px solid #22a06b; }
     .block-script_end { background:#e9f5ef; border-left:6px solid #22a06b; }
     .block-script_start, .block-script_end { align-items:center; min-height:auto; }
     .block-script_start .block-label, .block-script_end .block-label { padding-top:0; }
+    .block-set_color .block-label { min-width:56px; }
     .drop-hint { border-top:3px solid #2f8eff; margin-top:-2px; }
     .canvas-empty { color:var(--muted); font-size:0.9rem; padding:8px; }
     .block-label { font-weight:700; font-size:0.88rem; min-width:84px; color:#1f2f49; padding-top:26px; }
@@ -1361,6 +1804,13 @@ void sendLogicPageStreamed() {
     .led-checklist { display:flex; align-items:center; flex-wrap:wrap; gap:6px; }
     .led-check { display:inline-flex; align-items:center; gap:4px; font-size:0.82rem; color:var(--text); padding:2px 6px; border:1px solid rgba(20,32,51,0.16); border-radius:999px; background:#ffffff; }
     .led-check input { margin:0; }
+    .field-stack.compact { gap:6px; min-width:120px; }
+    .field-stack.compact label { margin:0; }
+    .variable-picker { min-width:118px; max-width:160px; }
+    .source-mode-select-wrap { width:5%; min-width:45px; flex:0 0 auto; }
+    .source-mode-select { min-width:0; width:100%; max-width:none; padding:7px 6px; text-align:center; }
+    .field-inline input.var-direct-input { width:96px; }
+    .set-variable-name-input, .set-variable-value-input { width:98px; }
     .number-wrap { display:flex; align-items:center; gap:6px; }
     .block-actions { margin-left:auto; display:flex; align-items:center; gap:4px; }
     .block-mini-btn { width:28px; height:28px; display:inline-flex; align-items:center; justify-content:center; border:1px solid rgba(20,32,51,0.18); border-radius:7px; background:#f4f7fc; color:#405070; padding:0; cursor:pointer; }
@@ -1514,6 +1964,8 @@ void sendLogicPageStreamed() {
         <div class="tool-item tool-set_brightness" draggable="true" data-tool="set_brightness">Helligkeit setzen</div>
         <div class="tool-item tool-fade" draggable="true" data-tool="fade">Überblenden</div>
         <div class="tool-item tool-wait" draggable="true" data-tool="wait">Warten</div>
+        <div class="tool-item tool-set_variable" draggable="true" data-tool="set_variable">Variable setzen</div>
+        <div class="tool-item tool-change_variable" draggable="true" data-tool="change_variable">Variable ändern</div>
         <div class="tool-item tool-repeat_start" draggable="true" data-tool="repeat">Wiederholen</div>
         <div class="tool-item tool-all_off" draggable="true" data-tool="all_off">Ausschalten</div>
       </aside>
@@ -1557,6 +2009,16 @@ void sendLogicPageStreamed() {
   let ledPreviewRunId = 0;
   let ledSimulatorRunning = false;
   let loadOverlayScriptNames = [];
+  let currentVariables = [];
+
+  function escapeHtml(value) {
+    return String(value || '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;');
+  }
 
   function syncToolbarStates() {
     const startButton = document.getElementById('startScriptBtn');
@@ -1568,6 +2030,23 @@ void sendLogicPageStreamed() {
     stopButton.classList.toggle('toggle-active', !ledSimulatorRunning);
     startButton.setAttribute('aria-pressed', ledSimulatorRunning ? 'true' : 'false');
     stopButton.setAttribute('aria-pressed', ledSimulatorRunning ? 'false' : 'true');
+  }
+
+  function refreshLogicVariables() {
+    fetch('/variables')
+      .then(response => {
+        if (!response.ok) {
+          throw new Error('variables fetch failed');
+        }
+        return response.json();
+      })
+      .then(data => {
+        currentVariables = Array.isArray(data.variables) ? data.variables : [];
+        renderList();
+      })
+      .catch(() => {
+        currentVariables = [];
+      });
   }
 
   function hexToRgb(hex) {
@@ -1821,6 +2300,12 @@ void sendLogicPageStreamed() {
     if (type === 'wait') {
       return { s: '1.0' };
     }
+    if (type === 'set_variable') {
+      return { name: 'var_name', varType: 'brightness', value: '100' };
+    }
+    if (type === 'change_variable') {
+      return { name: 'var_name', op_type: 'add', value: '10' };
+    }
     if (type === 'repeat_start') {
       return { count: '2' };
     }
@@ -1875,6 +2360,230 @@ void sendLogicPageStreamed() {
     return `<div class="field-stack">${label}<div class="mini-wheel-control"><button type="button" class="color-chip-btn" style="background:${value};" title="Farbrad öffnen"></button><div class="mini-wheel-panel"><div class="mini-wheel-stage"><canvas class="mini-wheel" width="96" height="96"></canvas><div class="mini-wheel-marker"></div></div><input type="hidden" data-k="${key}" class="color-wheel-input" value="${value}"><div class="color-readout"><span class="color-swatch" style="background:${value};"></span><input type="text" class="color-hex-input" value="${value}" maxlength="7" spellcheck="false" aria-label="Farbe als Hex eingeben"></div></div></div></div>`;
   }
 
+  function getEditorVariablePool() {
+    const merged = [];
+    const seenNames = new Set();
+
+    currentVariables.forEach(variable => {
+      if (!variable || !variable.name || !variable.type) {
+        return;
+      }
+      const name = String(variable.name).trim();
+      const type = String(variable.type).trim();
+      if (!name || !type || seenNames.has(name)) {
+        return;
+      }
+      seenNames.add(name);
+      merged.push({ name, type });
+    });
+
+    steps.forEach(step => {
+      if (!step || step.type !== 'set_variable') {
+        return;
+      }
+      const values = step.values || {};
+      const name = String(values.name || '').trim();
+      const type = String(values.varType || '').trim();
+      if (!name || !type || seenNames.has(name)) {
+        return;
+      }
+      if (type !== 'brightness' && type !== 'duration' && type !== 'led_mask' && type !== 'color') {
+        return;
+      }
+      seenNames.add(name);
+      merged.push({ name, type });
+    });
+
+    return merged;
+  }
+
+  function getVariablesByType(type) {
+    return getEditorVariablePool().filter(variable => variable.type === type);
+  }
+
+  function isVariableReference(value) {
+    return typeof value === 'string' && value.startsWith('$');
+  }
+
+  function getVariableReferenceName(value) {
+    return isVariableReference(value) ? value.slice(1) : '';
+  }
+
+  function buildVariablePicker(key, type, currentValue) {
+    const selectedName = getVariableReferenceName(currentValue);
+    let options = '<option value="">- Variable</option>';
+    getVariablesByType(type).forEach(variable => {
+      const selected = variable.name === selectedName ? ' selected' : '';
+      options += `<option value="${escapeHtml(variable.name)}"${selected}>$${escapeHtml(variable.name)}</option>`;
+    });
+    return `<div class="field-stack compact"><select data-k="${key}" class="variable-picker">${options}</select></div>`;
+  }
+
+  function buildVariableNameSelect(key, currentValue, allowedTypes) {
+    const types = Array.isArray(allowedTypes) ? allowedTypes : [];
+    const filteredVariables = getEditorVariablePool().filter(variable => types.length === 0 || types.includes(variable.type));
+    let options = '';
+
+    filteredVariables.forEach(variable => {
+      const selected = variable.name === currentValue ? ' selected' : '';
+      options += `<option value="${escapeHtml(variable.name)}"${selected}>$${escapeHtml(variable.name)}</option>`;
+    });
+
+    if (!options) {
+      options = '<option value="">Keine Variablen vorhanden</option>';
+    } else if (currentValue && !filteredVariables.some(variable => variable.name === currentValue)) {
+      options += `<option value="${escapeHtml(currentValue)}" selected>${escapeHtml(currentValue)} (nicht gefunden)</option>`;
+    }
+
+    return `<select data-k="${key}" class="variable-picker">${options}</select>`;
+  }
+
+  function getColorDirectValue(rawValue) {
+    if (isVariableReference(rawValue)) {
+      const variable = currentVariables.find(entry => entry.name === getVariableReferenceName(rawValue) && entry.type === 'color');
+      return variable && variable.hex ? variable.hex : '#FF0000';
+    }
+    return rawValue || '#FF0000';
+  }
+
+  function buildSourceModeSelect(key, isVariableMode, hasVariables) {
+    const modeDisabled = hasVariables ? '' : ' disabled';
+    return `<div class="source-mode-select-wrap"><select data-k="${key}_mode" data-source-mode="true" class="source-mode-select"${modeDisabled}><option value="fixed"${!isVariableMode ? ' selected' : ''}>fix</option><option value="var"${isVariableMode ? ' selected' : ''}>var</option></select></div>`;
+  }
+
+  function buildSourceModeField(key, labelText, variableType, currentValue, directMarkup) {
+    const variables = getVariablesByType(variableType);
+    const isVariableMode = isVariableReference(currentValue) && variables.length > 0;
+    const fixedStyle = isVariableMode ? ' style="display:none"' : '';
+    const variableStyle = isVariableMode ? '' : ' style="display:none"';
+    return `<div class="field-inline source-mode-field"><label>${labelText}</label>${buildSourceModeSelect(key, isVariableMode, variables.length > 0)}<div data-source-target="fixed"${fixedStyle}>${directMarkup}</div><div data-source-target="var"${variableStyle}>${buildVariablePicker(key + '_var', variableType, currentValue)}</div></div>`;
+  }
+
+  function buildColorField(key, value) {
+    return buildSourceModeField(key, 'Farbe', 'color', value, buildWheelControl(key, getColorDirectValue(value), ''));
+  }
+
+  function buildBrightnessField(key, value, labelText) {
+    const directValue = isVariableReference(value) ? '100' : value;
+    return buildSourceModeField(key, labelText, 'brightness', value, buildBrightnessSelect(key, directValue));
+  }
+
+  function buildDurationField(key, value, labelText) {
+    const directValue = isVariableReference(value) ? '1.0' : value;
+    return buildSourceModeField(key, labelText, 'duration', value, `<div class="number-wrap"><input type="number" data-k="${key}" class="var-direct-input" value="${directValue}" min="0" max="30" step="0.5" style="width:60px"><span>s</span></div>`);
+  }
+
+  function defaultValueForVariableType(type) {
+    if (type === 'led_mask') {
+      return '1';
+    }
+    if (type === 'brightness') {
+      return '100';
+    }
+    if (type === 'duration') {
+      return '1';
+    }
+    if (type === 'color') {
+      return '#ff0000';
+    }
+    return '';
+  }
+
+  function placeholderForVariableType(type) {
+    if (type === 'color') {
+      return '#ff0000';
+    }
+    return defaultValueForVariableType(type);
+  }
+
+  function buildLedTargetField(value) {
+    const ledVariables = getVariablesByType('led_mask');
+    const isVariableMode = isVariableReference(value) && ledVariables.length > 0;
+    const directValue = isVariableReference(value) ? defaultLedsCsv() : value;
+    const fixedStyle = isVariableMode ? ' style="display:none"' : '';
+    const variableStyle = isVariableMode ? '' : ' style="display:none"';
+    return `<div class="field-inline source-mode-field"><label>LEDs</label>${buildSourceModeSelect('leds', isVariableMode, ledVariables.length > 0)}<div class="led-checklist" data-source-target="fixed"${fixedStyle}>${ledCheckboxes(directValue)}</div><div data-source-target="var"${variableStyle}>${buildVariablePicker('leds_var', 'led_mask', value)}</div></div>`;
+  }
+
+  function initSetVariableFields() {
+    document.querySelectorAll('.block-set_variable').forEach(block => {
+      const typeSelect = block.querySelector('[data-k="varType"]');
+      const nameInput = block.querySelector('[data-k="name"]');
+      const valueInput = block.querySelector('[data-k="value"]');
+      if (!typeSelect || !valueInput) {
+        return;
+      }
+
+      const applyTypeDefaults = () => {
+        const nextType = typeSelect.value;
+        valueInput.value = defaultValueForVariableType(nextType);
+        valueInput.placeholder = placeholderForVariableType(nextType);
+      };
+
+      valueInput.placeholder = placeholderForVariableType(typeSelect.value);
+      if (typeSelect.dataset.bound === 'true') {
+        return;
+      }
+
+      typeSelect.dataset.bound = 'true';
+      typeSelect.addEventListener('change', () => {
+        applyTypeDefaults();
+        // Typwechsel beeinflusst verfügbare Variablen in nachfolgenden Blöcken.
+        syncStepsFromDom();
+        renderList();
+      });
+
+      if (nameInput && nameInput.dataset.bound !== 'true') {
+        nameInput.dataset.bound = 'true';
+        const refreshVariableSelectors = () => {
+          // Namensänderung muss in nachfolgenden Auswahlfeldern sichtbar werden.
+          syncStepsFromDom();
+          renderList();
+        };
+        nameInput.addEventListener('change', refreshVariableSelectors);
+        nameInput.addEventListener('blur', refreshVariableSelectors);
+      }
+    });
+  }
+
+  function updateSourceModeField(field) {
+    const modeSelect = field.querySelector('[data-source-mode="true"]');
+    const fixedTarget = field.querySelector('[data-source-target="fixed"]');
+    const variableTarget = field.querySelector('[data-source-target="var"]');
+    if (!modeSelect || !fixedTarget || !variableTarget) {
+      return;
+    }
+    const useVariable = modeSelect.value === 'var';
+    fixedTarget.style.display = useVariable ? 'none' : '';
+    variableTarget.style.display = useVariable ? '' : 'none';
+  }
+
+  function initSourceModeFields() {
+    document.querySelectorAll('.source-mode-field').forEach(field => {
+      const modeSelect = field.querySelector('[data-source-mode="true"]');
+      if (!modeSelect) {
+        return;
+      }
+      if (modeSelect.dataset.bound === 'true') {
+        updateSourceModeField(field);
+        return;
+      }
+      modeSelect.dataset.bound = 'true';
+      modeSelect.addEventListener('change', () => updateSourceModeField(field));
+      updateSourceModeField(field);
+    });
+  }
+
+  function resolveBlockValue(el, key, fallback) {
+    const modeField = el.querySelector(`[data-k="${key}_mode"]`);
+    const variableField = el.querySelector(`[data-k="${key}_var"]`);
+    if (modeField && modeField.value === 'var' && variableField && variableField.value) {
+      return '$' + variableField.value;
+    }
+    const field = el.querySelector(`[data-k="${key}"]`);
+    return field ? field.value : fallback;
+  }
+
   function buildBrightnessSelect(key, value) {
     const parsed = Number.parseInt(value, 10);
     const safe = Number.isFinite(parsed) ? parsed : 100;
@@ -1897,21 +2606,38 @@ void sendLogicPageStreamed() {
       return field ? field.value : null;
     };
     const getLedsCsv = () => {
+      const modeField = el.querySelector('[data-k="leds_mode"]');
+      const variableField = el.querySelector('[data-k="leds_var"]');
+      if (modeField && modeField.value === 'var' && variableField && variableField.value) {
+        return '$' + variableField.value;
+      }
       const selected = Array.from(el.querySelectorAll('input[type="checkbox"][data-k="leds"]:checked'))
         .map(input => input.value);
       return selected.length > 0 ? selected.join(',') : '0';
     };
     if (type === 'set_color') {
-      return { leds: getLedsCsv(), color: get('color'), br: get('br') };
+      return { leds: getLedsCsv(), color: resolveBlockValue(el, 'color', '#FF0000'), br: resolveBlockValue(el, 'br', '100') };
     }
     if (type === 'set_brightness') {
-      return { leds: getLedsCsv(), br: get('br') };
+      return { leds: getLedsCsv(), br: resolveBlockValue(el, 'br', '100') };
     }
     if (type === 'fade') {
-      return { leds: getLedsCsv(), from: get('from'), to: get('to'), br: get('br'), s: get('s') };
+      return {
+        leds: getLedsCsv(),
+        from: resolveBlockValue(el, 'from', '#FF0000'),
+        to: resolveBlockValue(el, 'to', '#0000FF'),
+        br: resolveBlockValue(el, 'br', '100'),
+        s: resolveBlockValue(el, 's', '1.0')
+      };
     }
     if (type === 'wait') {
-      return { s: get('s') };
+      return { s: resolveBlockValue(el, 's', '1.0') };
+    }
+    if (type === 'set_variable') {
+      return { name: get('name'), varType: get('varType'), value: get('value') };
+    }
+    if (type === 'change_variable') {
+      return { name: get('name'), op_type: get('op_type'), value: get('value') };
     }
     if (type === 'repeat_start') {
       return { count: get('count') };
@@ -2001,28 +2727,40 @@ void sendLogicPageStreamed() {
     const type = el.dataset.type;
     const values = readBlockValues(id, type);
     const step = { op: type };
-    const selectedLeds = readSelectedLeds(el);
-    const ledsCsv = selectedLeds.join(',');
+    const ledSource = values && values.leds ? values.leds : '0';
+    const usesLedVariable = isVariableReference(ledSource);
+    const selectedLeds = usesLedVariable ? [0] : normalizeLedCsv(ledSource);
+    const ledsCsv = usesLedVariable ? ledSource : selectedLeds.join(',');
     if (type === 'set_color') {
       step.op = 'set';
       step.led = selectedLeds[0];
       step.leds = ledsCsv;
       step.color = values.color;
-      step.br = parseInt(values.br, 10);
+      step.br = isVariableReference(values.br) ? values.br : parseInt(values.br, 10);
     } else if (type === 'set_brightness') {
       step.op = 'brightness';
       step.led = selectedLeds[0];
       step.leds = ledsCsv;
-      step.br = parseInt(values.br, 10);
+      step.br = isVariableReference(values.br) ? values.br : parseInt(values.br, 10);
     } else if (type === 'fade') {
       step.led = selectedLeds[0];
       step.leds = ledsCsv;
       step.from = values.from;
       step.to = values.to;
-      step.br = parseInt(values.br, 10);
-      step.s = parseFloat(values.s);
+      step.br = isVariableReference(values.br) ? values.br : parseInt(values.br, 10);
+      step.s = isVariableReference(values.s) ? values.s : parseFloat(values.s);
     } else if (type === 'wait') {
-      step.s = parseFloat(values.s);
+      step.s = isVariableReference(values.s) ? values.s : parseFloat(values.s);
+    } else if (type === 'set_variable') {
+      step.op = 'set_var';
+      step.name = values.name;
+      step.type = values.varType;
+      step.value = values.value;
+    } else if (type === 'change_variable') {
+      step.op = 'change_var';
+      step.name = values.name;
+      step.op_type = values.op_type;
+      step.value = parseInt(values.value, 10);
     } else if (type === 'repeat_start') {
       step.op = 'repeat_start';
       step.count = parseInt(values.count, 10);
@@ -2148,6 +2886,61 @@ void sendLogicPageStreamed() {
 
     const runId = ++ledPreviewRunId;
     const state = createLedPreviewState();
+    const variableStore = {};
+
+    (payload.vars || []).forEach(variable => {
+      variableStore[variable.name] = { ...variable };
+    });
+
+    function getVariableReference(rawValue) {
+      if (typeof rawValue === 'string' && rawValue.startsWith('$')) {
+        return variableStore[rawValue.slice(1)] || null;
+      }
+      return null;
+    }
+
+    function resolvePreviewLedTargets(rawValue, fallbackLed) {
+      const variable = getVariableReference(rawValue);
+      if (variable && variable.type === 'led_mask') {
+        const numericValue = parseInt(variable.value || 0, 10) || 0;
+        if (numericValue >= 1 && numericValue <= MAX_LEDS) {
+          return [numericValue - 1];
+        }
+        // Backward compatibility for older persisted values that used bitmasks.
+        const result = [];
+        for (let index = 0; index < MAX_LEDS; index += 1) {
+          if (numericValue & (1 << index)) {
+            result.push(index);
+          }
+        }
+        return result.length ? result : [0];
+      }
+      return normalizeLedCsv(rawValue || String(fallbackLed));
+    }
+
+    function resolvePreviewBrightness(rawValue) {
+      const variable = getVariableReference(rawValue);
+      if (variable && variable.type === 'brightness') {
+        return variable.value;
+      }
+      return Number.isFinite(rawValue) ? rawValue : parseInt(rawValue || '100', 10);
+    }
+
+    function resolvePreviewDurationMs(rawValue) {
+      const variable = getVariableReference(rawValue);
+      if (variable && variable.type === 'duration') {
+        return variable.value;
+      }
+      return Math.max(0, (parseFloat(rawValue || 0) || 0) * 1000);
+    }
+
+    function resolvePreviewColor(rawValue) {
+      const variable = getVariableReference(rawValue);
+      if (variable && variable.type === 'color') {
+        return { r: variable.r, g: variable.g, b: variable.b };
+      }
+      return hexToRgb(rawValue || '#000000');
+    }
 
     function runStep(stepIndex) {
       if (runId !== ledPreviewRunId) {
@@ -2161,11 +2954,12 @@ void sendLogicPageStreamed() {
       }
 
       const step = payload.ops[stepIndex];
-      const targetLeds = normalizeLedCsv(step.leds || String(step.led));
+      const targetLeds = resolvePreviewLedTargets(step.leds, step.led);
       if (step.op === 'set') {
-        const rgb = hexToRgb(step.color || '#000000');
+        const rgb = resolvePreviewColor(step.color || '#000000');
+        const brightness = resolvePreviewBrightness(step.br);
         targetLeds.forEach(ledIndex => {
-          state[ledIndex] = { enabled: true, r: rgb.r, g: rgb.g, b: rgb.b, br: Number.isFinite(step.br) ? step.br : 100 };
+          state[ledIndex] = { enabled: true, r: rgb.r, g: rgb.g, b: rgb.b, br: brightness };
         });
         applyLedPreviewState(state);
         scheduleLedPreviewNext(() => runStep(stepIndex + 1), 0);
@@ -2173,9 +2967,10 @@ void sendLogicPageStreamed() {
       }
 
       if (step.op === 'brightness') {
+        const brightness = resolvePreviewBrightness(step.br);
         targetLeds.forEach(ledIndex => {
           const current = state[ledIndex] || { enabled: false, r: 0, g: 0, b: 0, br: 0 };
-          state[ledIndex] = { ...current, enabled: true, br: Number.isFinite(step.br) ? step.br : current.br };
+          state[ledIndex] = { ...current, enabled: true, br: Number.isFinite(brightness) ? brightness : current.br };
         });
         applyLedPreviewState(state);
         scheduleLedPreviewNext(() => runStep(stepIndex + 1), 0);
@@ -2195,15 +2990,15 @@ void sendLogicPageStreamed() {
       }
 
       if (step.op === 'wait') {
-        scheduleLedPreviewNext(() => runStep(stepIndex + 1), Math.max(0, (step.s || 0) * 1000));
+        scheduleLedPreviewNext(() => runStep(stepIndex + 1), resolvePreviewDurationMs(step.s));
         return;
       }
 
       if (step.op === 'fade') {
-        const from = hexToRgb(step.from || '#000000');
-        const to = hexToRgb(step.to || '#000000');
-        const duration = Math.max(0, (step.s || 0) * 1000);
-        const brightness = Number.isFinite(step.br) ? step.br : 100;
+        const from = resolvePreviewColor(step.from || '#000000');
+        const to = resolvePreviewColor(step.to || '#000000');
+        const duration = resolvePreviewDurationMs(step.s);
+        const brightness = resolvePreviewBrightness(step.br);
         if (duration === 0) {
           targetLeds.forEach(ledIndex => {
             state[ledIndex] = { enabled: true, r: to.r, g: to.g, b: to.b, br: brightness };
@@ -2237,6 +3032,30 @@ void sendLogicPageStreamed() {
           }
         }
         ledPreviewFrameId = requestAnimationFrame(animateFade);
+        return;
+      }
+
+      if (step.op === 'set_var') {
+        if (step.type === 'color') {
+          const rgb = resolvePreviewColor(step.value || '#000000');
+          variableStore[step.name] = { name: step.name, type: 'color', value: 0, r: rgb.r, g: rgb.g, b: rgb.b, hex: rgbToHex(rgb.r, rgb.g, rgb.b) };
+        } else {
+          variableStore[step.name] = { name: step.name, type: step.type, value: parseInt(step.value || 0, 10) || 0, r: 0, g: 0, b: 0 };
+        }
+        scheduleLedPreviewNext(() => runStep(stepIndex + 1), 0);
+        return;
+      }
+
+      if (step.op === 'change_var') {
+        const current = variableStore[step.name];
+        if (current && current.type !== 'color') {
+          const delta = parseInt(step.value || 0, 10) || 0;
+          if (step.op_type === 'add') current.value += delta;
+          else if (step.op_type === 'subtract') current.value -= delta;
+          else if (step.op_type === 'multiply') current.value *= delta;
+          else current.value = delta;
+        }
+        scheduleLedPreviewNext(() => runStep(stepIndex + 1), 0);
         return;
       }
 
@@ -2382,6 +3201,135 @@ void sendLogicPageStreamed() {
     });
   }
 
+  // ── Touch-based drag & drop (iOS / iPadOS) ───────────────────────────────
+  let touchDragPayload  = null;   // same shape as dragPayload
+  let touchGhost        = null;   // floating clone element
+  let touchOffsetX      = 0;
+  let touchOffsetY      = 0;
+
+  function createTouchGhost(sourceEl, touchX, touchY) {
+    const rect   = sourceEl.getBoundingClientRect();
+    const ghost  = sourceEl.cloneNode(true);
+    ghost.style.cssText = [
+      'position:fixed',
+      'z-index:9999',
+      'pointer-events:none',
+      'opacity:0.75',
+      'box-shadow:0 8px 24px rgba(0,0,0,0.25)',
+      'border-radius:10px',
+      'left:' + rect.left + 'px',
+      'top:'  + rect.top  + 'px',
+      'width:' + rect.width + 'px',
+      'transition:none'
+    ].join(';');
+    document.body.appendChild(ghost);
+    touchOffsetX = touchX - rect.left;
+    touchOffsetY = touchY - rect.top;
+    return ghost;
+  }
+
+  function moveTouchGhost(touchX, touchY) {
+    if (!touchGhost) return;
+    touchGhost.style.left = (touchX - touchOffsetX) + 'px';
+    touchGhost.style.top  = (touchY - touchOffsetY) + 'px';
+  }
+
+  function removeTouchGhost() {
+    if (touchGhost) { touchGhost.remove(); touchGhost = null; }
+  }
+
+  function setupTouchDnD() {
+    // ── Helper: attach listeners to a single source element ──────────────
+    function attachTouchSource(el, payloadFn) {
+      el.addEventListener('touchstart', evt => {
+        if (!dragDropEnabled) return;
+        const touch = evt.touches[0];
+        touchDragPayload = payloadFn();
+        touchGhost = createTouchGhost(el, touch.clientX, touch.clientY);
+        // suppress scrolling while dragging
+        document.body.style.overflow = 'hidden';
+      }, { passive: true });
+    }
+
+    // ── Toolbox items ──────────────────────────────────────────────────────
+    document.querySelectorAll('.tool-item').forEach(tool => {
+      attachTouchSource(tool, () => ({ source: 'tool', type: tool.dataset.tool }));
+    });
+
+    // Note: block items are re-created on every renderList(); their touch
+    // listeners are attached in attachBlockTouchSource() called from renderList().
+
+    // ── Global touchmove: move ghost + show drop hint ─────────────────────
+    document.addEventListener('touchmove', evt => {
+      if (!touchDragPayload) return;
+      evt.preventDefault();          // prevent page scroll during drag
+      const touch = evt.touches[0];
+      moveTouchGhost(touch.clientX, touch.clientY);
+      const canvas = document.getElementById('scriptCanvas');
+      const cr = canvas.getBoundingClientRect();
+      if (touch.clientX >= cr.left && touch.clientX <= cr.right &&
+          touch.clientY >= cr.top  && touch.clientY <= cr.bottom) {
+        const idx = getDropIndexFromY(touch.clientY);
+        paintDropHint(idx);
+      } else {
+        clearDropHints();
+      }
+    }, { passive: false });
+
+    // ── Global touchend: perform drop ─────────────────────────────────────
+    document.addEventListener('touchend', evt => {
+      if (!touchDragPayload) return;
+      document.body.style.overflow = '';
+      removeTouchGhost();
+      const touch = evt.changedTouches[0];
+      const canvas = document.getElementById('scriptCanvas');
+      const cr = canvas.getBoundingClientRect();
+      if (touch.clientX >= cr.left && touch.clientX <= cr.right &&
+          touch.clientY >= cr.top  && touch.clientY <= cr.bottom) {
+        syncStepsFromDom();
+        const index = getDropIndexFromY(touch.clientY);
+        if (touchDragPayload.source === 'tool') {
+          if (touchDragPayload.type === 'repeat') {
+            insertRepeatPair(index);
+          } else {
+            insertStep(touchDragPayload.type, index);
+          }
+        } else if (touchDragPayload.source === 'block') {
+          const from = steps.findIndex(s => s.id === touchDragPayload.id);
+          if (from >= 0) {
+            const [moved] = steps.splice(from, 1);
+            let target = index;
+            if (from < index) target -= 1;
+            steps.splice(target, 0, moved);
+          }
+        }
+        renderList();
+      }
+      touchDragPayload = null;
+      clearDropHints();
+    });
+
+    // ── Cancel on touchcancel ─────────────────────────────────────────────
+    document.addEventListener('touchcancel', () => {
+      document.body.style.overflow = '';
+      removeTouchGhost();
+      touchDragPayload = null;
+      clearDropHints();
+    });
+  }
+
+  // Called from renderList() for each newly created block element
+  function attachBlockTouchSource(div, stepId) {
+    div.addEventListener('touchstart', evt => {
+      if (!dragDropEnabled) return;
+      const touch = evt.touches[0];
+      touchDragPayload = { source: 'block', id: stepId };
+      touchGhost = createTouchGhost(div, touch.clientX, touch.clientY);
+      document.body.style.overflow = 'hidden';
+    }, { passive: true });
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
   function renderList() {
     // Preserve any in-flight DOM changes (e.g. LED multi-select, color wheel) before
     // clearing and rebuilding the list.  Safe even when steps is empty: readBlockValues
@@ -2416,6 +3364,7 @@ void sendLogicPageStreamed() {
         dropIndex = -1;
         clearDropHints();
       });
+      attachBlockTouchSource(div, step.id);
 
       // Einrückung innerhalb Script/Repeat-Strukturen
       const all = steps;
@@ -2437,19 +3386,23 @@ void sendLogicPageStreamed() {
 
       let inner = '';
       if (step.type === 'set_color') {
-        inner = `<span class="block-label">Farbe</span><div class="field-inline"><label>LEDs</label><div class="led-checklist">${ledCheckboxes(selectedLeds)}</div></div><div class="field-inline"><label>Farbe</label>${buildWheelControl('color', values.color, '')}</div><div class="field-inline"><label>Helligkeit</label>${buildBrightnessSelect('br', values.br)}</div>`;
+        inner = `<span class="block-label">Farbe</span>${buildLedTargetField(selectedLeds)}${buildColorField('color', values.color)}${buildBrightnessField('br', values.br, 'Helligkeit')}`;
       } else if (step.type === 'set_brightness') {
-        inner = `<span class="block-label">Helligkeit</span><div class="field-inline"><label>LEDs</label><div class="led-checklist">${ledCheckboxes(selectedLeds)}</div></div><div class="field-inline"><label>Wert</label>${buildBrightnessSelect('br', values.br)}</div>`;
+        inner = `<span class="block-label">Helligkeit</span>${buildLedTargetField(selectedLeds)}${buildBrightnessField('br', values.br, 'Wert')}`;
       } else if (step.type === 'fade') {
-        inner = `<span class="block-label">Blend</span><div class="field-inline"><label>LEDs</label><div class="led-checklist">${ledCheckboxes(selectedLeds)}</div></div><div class="field-inline"><label>Von</label>${buildWheelControl('from', values.from, '')}</div><div class="field-inline"><label>Nach</label>${buildWheelControl('to', values.to, '')}</div><div class="field-inline"><label>Helligkeit</label>${buildBrightnessSelect('br', values.br)}</div><div class="field-inline"><label>Dauer</label><div class="number-wrap"><input type="number" data-k="s" value="${values.s}" min="0" max="30" step="0.5" style="width:60px"><span>s</span></div></div>`;
+        inner = `<span class="block-label">Blend</span>${buildLedTargetField(selectedLeds)}<div class="field-inline"><label>Von</label>${buildWheelControl('from', getColorDirectValue(values.from), '')}${buildVariablePicker('from_var', 'color', values.from)}</div><div class="field-inline"><label>Nach</label>${buildWheelControl('to', getColorDirectValue(values.to), '')}${buildVariablePicker('to_var', 'color', values.to)}</div>${buildBrightnessField('br', values.br, 'Helligkeit')}${buildDurationField('s', values.s, 'Dauer')}`;
       } else if (step.type === 'wait') {
-        inner = `<span class="block-label">Warten</span><div class="field-inline"><label>Dauer</label><div class="number-wrap"><input type="number" data-k="s" value="${values.s}" min="0" max="30" step="0.5" style="width:60px"><span>s</span></div></div>`;
+        inner = `<span class="block-label">Warten</span>${buildDurationField('s', values.s, 'Dauer')}`;
+      } else if (step.type === 'set_variable') {
+        inner = `<span class="block-label">Variable setzen</span><div class="field-inline"><label>Name</label><input type="text" class="set-variable-name-input" data-k="name" value="${values.name}" maxlength="15"></div><div class="field-inline"><label>Typ</label><select data-k="varType"><option value="brightness"${values.varType === 'brightness' ? ' selected' : ''}>Helligkeit</option><option value="duration"${values.varType === 'duration' ? ' selected' : ''}>Dauer</option><option value="led_mask"${values.varType === 'led_mask' ? ' selected' : ''}>LED-Auswahl</option><option value="color"${values.varType === 'color' ? ' selected' : ''}>Farbe</option></select></div><div class="field-inline"><label>Wert</label><input type="text" class="set-variable-value-input" data-k="value" value="${values.value}" placeholder="${placeholderForVariableType(values.varType)}"></div>`;
+      } else if (step.type === 'change_variable') {
+        inner = `<span class="block-label">Variable ändern</span><div class="field-inline"><label>Name</label>${buildVariableNameSelect('name', values.name, ['brightness', 'duration', 'led_mask'])}</div><div class="field-inline"><label>Aktion</label><select data-k="op_type"><option value="add"${values.op_type === 'add' ? ' selected' : ''}>Addieren</option><option value="subtract"${values.op_type === 'subtract' ? ' selected' : ''}>Subtrahieren</option><option value="multiply"${values.op_type === 'multiply' ? ' selected' : ''}>Multiplizieren</option><option value="set"${values.op_type === 'set' ? ' selected' : ''}>Setzen</option></select></div><div class="field-inline"><label>Wert</label><input type="number" data-k="value" value="${values.value}" min="0" max="65535"></div>`;
       } else if (step.type === 'repeat_start') {
         inner = `<span class="block-label">Wiederholen</span><div class="field-inline"><label>Wiederhole</label><div class="number-wrap"><input type="number" data-k="count" value="${values.count}" min="1" max="16" step="1" style="width:60px"><span>mal</span></div></div><span class="inline-note">ab hier bis Wiederholen Ende</span>`;
       } else if (step.type === 'repeat_end') {
         inner = `<span class="block-label">Wiederholen Ende</span><span class="inline-note">Ende Wiederhol-Block</span>`;
       } else if (step.type === 'all_off') {
-        inner = `<span class="block-label">Ausschalten</span><div class="field-inline"><label>LEDs</label><div class="led-checklist">${ledCheckboxes(selectedLeds)}</div></div>`;
+        inner = `<span class="block-label">Ausschalten</span>${buildLedTargetField(selectedLeds)}`;
       }
       inner += `<div class="block-actions"><button class="block-mini-btn copy" onclick="duplicateBlock(${step.id})" title="Kopieren" aria-label="Kopieren"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"></rect><rect x="4" y="4" width="11" height="11" rx="2"></rect></svg></button><button class="block-mini-btn remove" onclick="removeBlock(${step.id})" title="Entfernen" aria-label="Entfernen"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12"></path><path d="M18 6 6 18"></path></svg></button></div>`;
       div.innerHTML = inner;
@@ -2479,6 +3432,8 @@ void sendLogicPageStreamed() {
     }
 
     initAllColorWheels();
+    initSourceModeFields();
+    initSetVariableFields();
     syncDragDropWithColorWheel();
     startLedPreviewPlayback();
   }
@@ -2509,9 +3464,41 @@ void sendLogicPageStreamed() {
     return { ops, nextIndex: index, closed: false };
   }
 
+  function validateUniqueSetVariableNames(rawSteps) {
+    const seenNames = new Map();
+    for (let i = 0; i < rawSteps.length; i += 1) {
+      const step = rawSteps[i];
+      if (!step || step.op !== 'set_var') {
+        continue;
+      }
+
+      const normalized = String(step.name || '').trim().toLowerCase();
+      if (!normalized) {
+        continue;
+      }
+
+      if (seenNames.has(normalized)) {
+        return {
+          ok: false,
+          name: String(step.name || '').trim() || normalized,
+          firstIndex: seenNames.get(normalized),
+          secondIndex: i
+        };
+      }
+      seenNames.set(normalized, i);
+    }
+    return { ok: true };
+  }
+
   function buildPayload() {
     syncStepsFromDom();
     const raw = steps.map(stepRef => readBlock(stepRef.id)).filter(Boolean);
+    const uniqueNameCheck = validateUniqueSetVariableNames(raw);
+    if (!uniqueNameCheck.ok) {
+      return {
+        error: 'Variable "' + uniqueNameCheck.name + '" ist mehrfach in "Variable setzen" vorhanden.'
+      };
+    }
     if (raw.some(item => item.op === 'repeat_end')) {
       // top-level repeat_end without matching start is handled below by compileSequence return
     }
@@ -2524,6 +3511,7 @@ void sendLogicPageStreamed() {
     }
     return {
       loop: scriptLoopEnabled,
+      vars: currentVariables.map(variable => ({ name: variable.name, type: variable.type, value: variable.type === 'color' ? variable.hex : variable.value })),
       ops: compiled.ops
     };
   }
@@ -2777,6 +3765,18 @@ void sendLogicPageStreamed() {
         result.push({ id, type: 'fade', values: { leds: op.leds || String(op.led != null ? op.led : 0), from: op.from || '#FF0000', to: op.to || '#0000FF', br: String(op.br != null ? op.br : 100), s: String(op.s != null ? op.s : 1) } });
       } else if (op.op === 'wait') {
         result.push({ id, type: 'wait', values: { s: String(op.s != null ? op.s : 1) } });
+      } else if (op.op === 'set_var') {
+        result.push({
+          id,
+          type: 'set_variable',
+          values: {
+            name: op.name || 'var_name',
+            varType: op.type || 'brightness',
+            value: String(op.value != null ? op.value : 0)
+          }
+        });
+      } else if (op.op === 'change_var') {
+        result.push({ id, type: 'change_variable', values: { name: op.name || 'var_name', op_type: op.op_type || 'add', value: String(op.value != null ? op.value : 0) } });
       } else if (op.op === 'all_off') {
         result.push({ id, type: 'all_off', values: { leds: op.leds || String(op.led != null ? op.led : 0) } });
       }
@@ -2842,7 +3842,9 @@ void sendLogicPageStreamed() {
   syncLedCountSelect();
   syncToolbarStates();
   setupToolboxDnD();
+  setupTouchDnD();
   renderList();
+  refreshLogicVariables();
   loadActiveScriptFromDevice();
 </script>
 </body>
@@ -2892,6 +3894,34 @@ String buildConfigPage() {
     .link { color:#0f5bbf; font-weight:700; text-decoration:none; }
     .config-title { display:flex; align-items:center; gap:10px; }
     .config-title-icon { width:84px; height:84px; flex:0 0 auto; overflow:visible; }
+    /* V2 Variables UI Styles */
+    .variables-list { background: #f9f7fc; border-radius: 12px; padding: 16px; margin-bottom: 20px; }
+    .variable-item { display:flex; align-items:center; justify-content:space-between; padding:12px; background:#fff; border:1px solid #ddd0f0; border-radius:8px; margin-bottom:8px; }
+    .variable-item-info { flex:1; }
+    .variable-name { font-weight:700; color:#1a1030; font-family:monospace; }
+    .variable-type { font-size:0.9rem; color:#6d5a84; }
+    .variable-value { background:#f2eaff; padding:4px 8px; border-radius:4px; font-family:monospace; font-size:0.9rem; }
+    .variable-item-actions { display:flex; gap:6px; }
+    .variable-item-actions button { padding:6px 10px; font-size:0.85rem; border:1px solid #ddd0f0; background:#fff; border-radius:6px; cursor:pointer; color:#6d5a84; }
+    .variable-item-actions button:hover { background:#f2eaff; }
+    .variable-creation-panel { background:#f9f7fc; border:2px dashed #9b3db8; border-radius:12px; padding:16px; }
+    .led-strip-preview { display:flex; gap:6px; margin:10px 0; flex-wrap:wrap; }
+    .led { width:32px; height:32px; border-radius:4px; cursor:pointer; border:2px solid #ddd0f0; background:#fff; transition:all 0.2s; }
+    .led:hover { transform:scale(1.1); }
+    .led.selected { border-color:#9b3db8; background:#9b3db8; box-shadow:0 0 12px rgba(155,61,184,0.4); }
+    .led-actions { display:flex; gap:8px; margin-top:10px; }
+    .led-actions button { flex:1; padding:8px 12px; font-size:0.9rem; background:linear-gradient(135deg,#8d5f18,#bd8528); color:#fff; border:0; border-radius:8px; cursor:pointer; font-weight:600; }
+    .brightness-slider-container { display:flex; align-items:center; gap:10px; margin:10px 0; }
+    .brightness-slider-container input[type="range"] { flex:1; width:auto; }
+    .value-display { min-width:40px; text-align:right; font-weight:700; color:#9b3db8; }
+    .quick-presets { display:flex; gap:6px; flex-wrap:wrap; margin:10px 0; }
+    .quick-presets button { flex:0 1 auto; padding:8px 12px; font-size:0.9rem; background:#f2eaff; color:#9b3db8; border:1px solid #9b3db8; border-radius:6px; cursor:pointer; font-weight:600; }
+    .quick-presets button:hover { background:#9b3db8; color:#fff; }
+    .duration-input-group { display:flex; align-items:center; gap:8px; margin:10px 0; }
+    .duration-input-group input { width:80px; margin:0; }
+    .duration-input-group span { color:#6d5a84; font-weight:600; }
+    .color-input-group { display:flex; align-items:center; gap:10px; margin:10px 0; }
+    .color-input-group input[type="color"] { width:60px; height:40px; border-radius:6px; cursor:pointer; margin:0; }
     @media (max-width: 860px) { .layout { grid-template-columns:1fr; } }
   </style>
 </head>
@@ -2994,6 +4024,41 @@ String buildConfigPage() {
   page += htmlEscape(otaUploadResult.isEmpty() ? String("-") : otaUploadResult);
   page += R"HTML(</p>
       </article>
+    </section>
+
+    <section class="panel">
+      <h2>🔧 Variablen-Management (V2)</h2>
+      
+      <div class="variables-list">
+        <h4>Definierte Variablen</h4>
+        <div class="tiny" id="variableStatus">Noch keine Variablen definiert.</div>
+        <div id="variablesContainer" style="display:grid; gap:10px;">
+        </div>
+      </div>
+
+      <div class="variable-creation-panel">
+        <h4>Neue Variable erstellen</h4>
+        
+        <label>Variablenname</label>
+        <input type="text" id="varName" placeholder="z.B. 'my_brightness'" maxlength="15" style="margin-bottom:10px;">
+        
+        <label>Variable Typ</label>
+        <select id="varType" onchange="updateVariableInput()" style="margin-bottom:10px;">
+          <option value="brightness">Helligkeit (0-255)</option>
+          <option value="duration">Dauer (ms)</option>
+          <option value="led_mask">LED-Auswahl</option>
+          <option value="color">Farbe (RGB)</option>
+        </select>
+        
+        <div id="varInputContainer" style="margin:10px 0;">
+          <!-- Dynamisch aktualisiert -->
+        </div>
+        
+        <div class="led-actions">
+          <button class="primary" id="variableSubmitButton" onclick="saveVariable()" type="button" style="margin-top:10px;">Variable erstellen</button>
+          <button class="neutral" onclick="resetVariableForm()" type="button" style="margin-top:10px;">Zurücksetzen</button>
+        </div>
+      </div>
     </section>
 
     <section class="panel">
@@ -3107,11 +4172,296 @@ String buildConfigPage() {
       });
     }
 
+    // V2 Variables UI Functions
+    let editingVariableName = '';
+    let currentVariables = [];
+
+    function showVariableStatus(message, isError) {
+      const target = document.getElementById('variableStatus');
+      target.textContent = message;
+      target.style.color = isError ? '#ab2f2f' : '#6d5a84';
+    }
+
+    function updateVariableInput(existingVariable) {
+      const varType = document.getElementById('varType').value;
+      const container = document.getElementById('varInputContainer');
+      let html = '';
+
+      switch (varType) {
+        case 'brightness':
+          html = `<label>Helligkeit (0-255)</label>
+            <div class="brightness-slider-container">
+              <input type="range" id="varValueSlider" min="0" max="255" value="128"
+                     oninput="document.getElementById('varValueDisplay').textContent = this.value">
+              <span id="varValueDisplay" class="value-display">128</span>
+            </div>
+            <div class="quick-presets">
+              <button onclick="setVariableBrightness(0)" type="button">0%</button>
+              <button onclick="setVariableBrightness(128)" type="button">50%</button>
+              <button onclick="setVariableBrightness(200)" type="button">80%</button>
+              <button onclick="setVariableBrightness(255)" type="button">100%</button>
+            </div>`;
+          break;
+
+        case 'duration':
+          html = `<label>Dauer</label>
+            <div class="duration-input-group">
+              <input type="number" id="varDurationSec" min="0" max="30" value="1" placeholder="0">
+              <span>s</span>
+              <input type="number" id="varDurationMs" min="0" max="999" value="0" placeholder="0">
+              <span>ms</span>
+            </div>
+            <div class="quick-presets">
+              <button onclick="setVariableDuration(100)" type="button">100ms</button>
+              <button onclick="setVariableDuration(500)" type="button">500ms</button>
+              <button onclick="setVariableDuration(1000)" type="button">1s</button>
+              <button onclick="setVariableDuration(2000)" type="button">2s</button>
+              <button onclick="setVariableDuration(5000)" type="button">5s</button>
+            </div>`;
+          break;
+
+        case 'led_mask':
+          html = `<label>LEDs auswählen</label>
+            <div class="led-strip-preview" id="ledStripPreview">` +
+            Array.from({ length: 12 }, (_, i) =>
+              `<div class="led" data-index="${i}" onclick="toggleLED(${i})"></div>`
+            ).join('') +
+            `</div>
+            <div class="led-actions">
+              <button onclick="selectAllLEDs()" type="button">Alle</button>
+              <button onclick="selectNoLEDs()" type="button">Keine</button>
+            </div>`;
+          break;
+
+        case 'color':
+          html = `<label>Farbe (RGB)</label>
+            <div class="color-input-group">
+              <input type="color" id="varColorPicker" value="#ff0000"
+                     oninput="document.getElementById('varColorHex').value = this.value">
+              <input type="text" id="varColorHex" value="#ff0000" maxlength="7" style="margin:0;">
+            </div>`;
+          break;
+      }
+
+      container.innerHTML = html;
+      if (existingVariable) {
+        populateVariableInputs(existingVariable);
+      }
+    }
+
+    function populateVariableInputs(variable) {
+      if (!variable) {
+        return;
+      }
+      if (variable.type === 'brightness') {
+        setVariableBrightness(variable.value || 0);
+      } else if (variable.type === 'duration') {
+        setVariableDuration(variable.value || 0);
+      } else if (variable.type === 'led_mask') {
+        selectNoLEDs();
+        for (let index = 0; index < 12; index += 1) {
+          if ((variable.value || 0) & (1 << index)) {
+            toggleLED(index);
+          }
+        }
+      } else if (variable.type === 'color') {
+        const hex = variable.hex || '#ff0000';
+        document.getElementById('varColorPicker').value = hex;
+        document.getElementById('varColorHex').value = hex;
+      }
+    }
+
+    function setVariableBrightness(value) {
+      document.getElementById('varValueSlider').value = value;
+      document.getElementById('varValueDisplay').textContent = value;
+    }
+
+    function setVariableDuration(ms) {
+      const sec = Math.floor(ms / 1000);
+      const msPart = ms % 1000;
+      document.getElementById('varDurationSec').value = sec;
+      document.getElementById('varDurationMs').value = msPart;
+    }
+
+    function toggleLED(index) {
+      const led = document.querySelector(`[data-index="${index}"]`);
+      if (led) {
+        led.classList.toggle('selected');
+      }
+    }
+
+    function selectAllLEDs() {
+      document.querySelectorAll('[data-index]').forEach(led => led.classList.add('selected'));
+    }
+
+    function selectNoLEDs() {
+      document.querySelectorAll('[data-index]').forEach(led => led.classList.remove('selected'));
+    }
+
+    function getLEDMask() {
+      let mask = 0;
+      document.querySelectorAll('[data-index].selected').forEach(led => {
+        mask |= (1 << parseInt(led.dataset.index, 10));
+      });
+      return mask;
+    }
+
+    function resetVariableForm() {
+      editingVariableName = '';
+      document.getElementById('varName').value = '';
+      document.getElementById('varType').value = 'brightness';
+      document.getElementById('variableSubmitButton').textContent = 'Variable erstellen';
+      updateVariableInput();
+    }
+
+    function renderVariables() {
+      const container = document.getElementById('variablesContainer');
+      container.innerHTML = '';
+
+      if (!currentVariables.length) {
+        showVariableStatus('Noch keine Variablen definiert.', false);
+        return;
+      }
+
+      showVariableStatus(`${currentVariables.length} Variablen geladen.`, false);
+      currentVariables.forEach(variable => {
+        let displayValue = '';
+        if (variable.type === 'brightness') {
+          displayValue = `${variable.value}/255`;
+        } else if (variable.type === 'duration') {
+          displayValue = `${variable.value}ms`;
+        } else if (variable.type === 'led_mask') {
+          displayValue = `mask:${variable.value}`;
+        } else {
+          displayValue = variable.hex || `RGB(${variable.r},${variable.g},${variable.b})`;
+        }
+
+        const item = document.createElement('div');
+        item.className = 'variable-item';
+        item.innerHTML = `
+          <div class="variable-item-info">
+            <div class="variable-name">$${escapeHtml(variable.name)}</div>
+            <div class="variable-type">${escapeHtml(variable.type)}</div>
+          </div>
+          <div class="variable-value">${escapeHtml(displayValue)}</div>
+          <div class="variable-item-actions">
+            <button onclick="editVariable('${encodeURIComponent(variable.name)}')" type="button">Bearbeiten</button>
+            <button onclick="deleteVariable('${encodeURIComponent(variable.name)}')" type="button">Löschen</button>
+          </div>
+        `;
+        container.appendChild(item);
+      });
+    }
+
+    function collectVariablePayload() {
+      const name = document.getElementById('varName').value.trim();
+      const type = document.getElementById('varType').value;
+      const payload = { name, type, value: 0 };
+
+      if (type === 'brightness') {
+        payload.value = parseInt(document.getElementById('varValueSlider').value, 10) || 0;
+      } else if (type === 'duration') {
+        const seconds = parseInt(document.getElementById('varDurationSec').value, 10) || 0;
+        const millis = parseInt(document.getElementById('varDurationMs').value, 10) || 0;
+        payload.value = seconds * 1000 + millis;
+      } else if (type === 'led_mask') {
+        payload.value = getLEDMask();
+      } else if (type === 'color') {
+        payload.hex = document.getElementById('varColorHex').value.trim();
+      }
+
+      return payload;
+    }
+
+    async function refreshVariables() {
+      try {
+        const response = await fetch('/variables');
+        const data = await response.json();
+        currentVariables = Array.isArray(data.variables) ? data.variables : [];
+        renderVariables();
+      } catch (error) {
+        showVariableStatus('Variablen konnten nicht geladen werden.', true);
+        console.log(error);
+      }
+    }
+
+    async function saveVariable() {
+      const payload = collectVariablePayload();
+      if (!payload.name) {
+        showVariableStatus('Variablenname erforderlich.', true);
+        return;
+      }
+
+      try {
+        const response = await fetch('/variables', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          showVariableStatus(data.error || 'Variable konnte nicht gespeichert werden.', true);
+          return;
+        }
+        currentVariables = Array.isArray(data.variables) ? data.variables : [];
+        renderVariables();
+        showVariableStatus(`Variable $${payload.name} gespeichert.`, false);
+        resetVariableForm();
+      } catch (error) {
+        showVariableStatus('Speichern fehlgeschlagen.', true);
+        console.log(error);
+      }
+    }
+
+    function editVariable(encodedName) {
+      const name = decodeURIComponent(encodedName);
+      const variable = currentVariables.find(entry => entry.name === name);
+      if (!variable) {
+        showVariableStatus('Variable nicht gefunden.', true);
+        return;
+      }
+      editingVariableName = name;
+      document.getElementById('varName').value = variable.name;
+      document.getElementById('varType').value = variable.type;
+      document.getElementById('variableSubmitButton').textContent = 'Variable aktualisieren';
+      updateVariableInput(variable);
+      showVariableStatus(`Variable $${name} zur Bearbeitung geladen.`, false);
+    }
+
+    async function deleteVariable(encodedName) {
+      const name = decodeURIComponent(encodedName);
+      if (!confirm(`Variable "${name}" löschen?`)) {
+        return;
+      }
+
+      try {
+        const response = await fetch('/variables?name=' + encodeURIComponent(name), { method: 'DELETE' });
+        const data = await response.json();
+        if (!response.ok) {
+          showVariableStatus(data.error || 'Variable konnte nicht gelöscht werden.', true);
+          return;
+        }
+        currentVariables = Array.isArray(data.variables) ? data.variables : [];
+        renderVariables();
+        if (editingVariableName === name) {
+          resetVariableForm();
+        }
+        showVariableStatus(`Variable $${name} gelöscht.`, false);
+      } catch (error) {
+        showVariableStatus('Löschen fehlgeschlagen.', true);
+        console.log(error);
+      }
+    }
+
     document.getElementById('scan-trigger').addEventListener('click', refreshScan);
     setupPasswordToggle();
     setupOtaCheck();
     refreshStatus();
     setInterval(refreshStatus, 3000);
+
+    // V2 Variables UI Initialization
+    resetVariableForm();
+    refreshVariables();
   </script>
 </body>
 </html>)HTML";
@@ -3203,6 +4553,8 @@ void handleLedSave() {
   populateLedConfigFromRequest(ledConfig, ledCount);
   resetAnimationStartTimes(ledAnimationStartMs);
   ledPreviewActive = false;
+  scriptRunning = false;
+  scriptOutputActive = false;  // user explicitly switched to LED config
 
   saveLedConfig();
   applyLedState();
@@ -3393,6 +4745,7 @@ void handleScriptSave() {
 void handleScriptStop() {
   scriptRunning = false;
   scriptAllOff();
+  scriptOutputActive = true;  // keep script buffer (all off) — do NOT fall back to ledConfig
   ws2812Show();
   appendLog("Script angehalten.");
   webServer.send(204, "text/plain", "");
@@ -3401,6 +4754,7 @@ void handleScriptStop() {
 void handleScriptClear() {
   scriptRunning = false;
   scriptAllOff();
+  scriptOutputActive = false;  // cleared — allow ledConfig to take over again
   ws2812Show();
   savedScriptJson = "";
   preferences.begin(kPreferencesNamespace, false);
@@ -3416,6 +4770,79 @@ void handleScriptCurrent() {
     return;
   }
   webServer.send(200, "application/json", savedScriptJson);
+}
+
+void handleVariablesList() {
+  webServer.send(200, "application/json", "{\"variables\":" + collectVariablesAsJson() + "}");
+}
+
+void handleVariablesUpsert() {
+  if (!webServer.hasArg("plain")) {
+    webServer.send(400, "application/json", "{\"error\":\"Body fehlt\"}");
+    return;
+  }
+
+  const String payload = webServer.arg("plain");
+  const String name = extractJsonStr(payload, "name");
+  const String typeRaw = extractJsonStr(payload, "type");
+  const String valueRaw = extractJsonStr(payload, "value");
+  const String hexRaw = extractJsonStr(payload, "hex");
+
+  if (!isValidVariableName(name)) {
+    webServer.send(400, "application/json", "{\"error\":\"Ungültiger Variablenname\"}");
+    return;
+  }
+
+  VarType varType = VarType::kDuration;
+  if (!parseVarType(typeRaw, varType)) {
+    webServer.send(400, "application/json", "{\"error\":\"Ungültiger Variablentyp\"}");
+    return;
+  }
+
+  bool ok = false;
+  if (varType == VarType::kColor) {
+    uint8_t r = 0;
+    uint8_t g = 0;
+    uint8_t b = 0;
+    ok = parseHexColor(hexRaw.isEmpty() ? valueRaw : hexRaw, r, g, b) &&
+         createOrUpdateVariable(name, varType, 0, r, g, b);
+  } else {
+    long numericValue = valueRaw.toInt();
+    if (varType == VarType::kBrightness) {
+      numericValue = constrain(numericValue, 0L, 255L);
+    } else if (varType == VarType::kLedMask) {
+      numericValue = constrain(numericValue, 1L, static_cast<long>(kLedMaxCount));
+    } else {
+      numericValue = constrain(numericValue, 0L, 65535L);
+    }
+    ok = createOrUpdateVariable(name, varType, static_cast<uint16_t>(numericValue));
+  }
+
+  if (!ok) {
+    webServer.send(500, "application/json", "{\"error\":\"Variable konnte nicht gespeichert werden\"}");
+    return;
+  }
+
+  persistVariables();
+  appendLog("Variable gespeichert: $" + name);
+  webServer.send(200, "application/json", "{\"ok\":true,\"variables\":" + collectVariablesAsJson() + "}");
+}
+
+void handleVariablesDelete() {
+  if (!webServer.hasArg("name")) {
+    webServer.send(400, "application/json", "{\"error\":\"name fehlt\"}");
+    return;
+  }
+
+  const String name = webServer.arg("name");
+  if (!deleteVariable(name)) {
+    webServer.send(404, "application/json", "{\"error\":\"Variable nicht gefunden\"}");
+    return;
+  }
+
+  persistVariables();
+  appendLog("Variable gelöscht: $" + name);
+  webServer.send(200, "application/json", "{\"ok\":true,\"variables\":" + collectVariablesAsJson() + "}");
 }
 
 void handleOtaCheck() {
@@ -3584,6 +5011,9 @@ void configureWebServer() {
   webServer.on("/script/stop", HTTP_POST, handleScriptStop);
   webServer.on("/script/clear", HTTP_POST, handleScriptClear);
   webServer.on("/script/current", HTTP_GET, handleScriptCurrent);
+  webServer.on("/variables", HTTP_GET, handleVariablesList);
+  webServer.on("/variables", HTTP_POST, handleVariablesUpsert);
+  webServer.on("/variables", HTTP_DELETE, handleVariablesDelete);
   webServer.on("/scripts/list", HTTP_GET, handleScriptsList);
   webServer.on("/scripts/slot/save", HTTP_POST, handleScriptSlotSave);
   webServer.on("/scripts/slot/load", HTTP_GET, handleScriptSlotLoad);
@@ -3671,10 +5101,13 @@ void setup() {
   WiFi.setSleep(false);
 
   loadCredentials();
+  applyLedState();  // show all-off before loading config
   loadLedConfig();
   resetAnimationStartTimes(ledAnimationStartMs);
   resetAnimationStartTimes(previewAnimationStartMs);
-  applyLedState();
+  if (!scriptOutputActive) {
+    applyLedState();  // only apply LED config if no script was autoloaded
+  }
   configureWebServer();
   startAccessPoint();
 
@@ -3697,11 +5130,14 @@ void loop() {
 
   if (ledPreviewActive && now - lastLedPreviewMs > kLedPreviewTimeoutMs) {
     ledPreviewActive = false;
-    applyLedState();
+    if (!scriptOutputActive) {
+      applyLedState();
+    }
     appendLog("LED-Vorschau beendet.");
   }
 
-  if ((ledPreviewActive || hasAnimatedLeds(activeLedConfig(), activeLedCount())) &&
+  if (!scriptOutputActive &&
+      (ledPreviewActive || hasAnimatedLeds(activeLedConfig(), activeLedCount())) &&
       now - lastLedRenderMs >= kLedAnimationFrameMs) {
     lastLedRenderMs = now;
     applyLedState();

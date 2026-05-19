@@ -2032,8 +2032,13 @@ void sendLogicPageStreamed() {
   </div>
 </div>
 
+<div id="led-config-meta" data-led-count=")HTML");
+  webServer.sendContent("\"");
+  webServer.sendContent(String(ledCount));
+  webServer.sendContent(R"HTML(" hidden></div>
+
 <script>
-  const MAX_LEDS = Number.parseInt((document.getElementById('ledCountSelect') || {}).value || '1', 10) || 1;
+  const MAX_LEDS = Number.parseInt((document.getElementById('led-config-meta') || {}).dataset?.ledCount || '1', 10) || 1;
   const CURRENT_LED_COUNT = MAX_LEDS;
   let steps = [];
   let scriptLoopEnabled = false;
